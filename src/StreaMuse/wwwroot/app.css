@@ -1,0 +1,575 @@
+/* Layout only. All colour, type and spacing come from the Industry design system in styles.css,
+   which is vendored verbatim and must not be edited; overrides belong here. */
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--color-bg);
+  font-family: var(--font-body);
+  user-select: none;
+}
+
+@keyframes su-pulse {
+
+  0%,
+  100% {
+    opacity: 1
+  }
+
+  50% {
+    opacity: .25
+  }
+}
+
+/* - window chrome - */
+.titlebar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 30px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--color-divider);
+  -webkit-app-region: drag;
+}
+
+.titlebar-name {
+  font-family: var(--font-heading);
+  font-size: 11px;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--color-text) 60%, transparent);
+}
+
+.titlebar-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.titlebar-btn {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  color: color-mix(in srgb, var(--color-text) 45%, transparent);
+}
+
+.titlebar-btn:hover {
+  background: color-mix(in srgb, var(--color-text) 10%, transparent);
+  color: var(--color-text);
+}
+
+#tb-close:hover {
+  background: var(--color-accent);
+  color: var(--color-bg);
+}
+
+.nav {
+  flex: none;
+  border-bottom: 1px solid var(--color-divider);
+  gap: var(--space-3);
+}
+
+.nav-brand {
+  margin-right: 0;
+}
+
+.nav .tag-outline {
+  margin-right: auto;
+}
+
+/* - shared type helpers - */
+.upper {
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.micro {
+  font-size: 11px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--color-text) 50%, transparent);
+}
+
+.ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clamp2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.card-head {
+  margin: 0;
+  color: color-mix(in srgb, var(--color-text) 55%, transparent);
+}
+
+/* - wide layout - */
+.wide-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 400px 1fr;
+  gap: var(--space-8);
+  padding: var(--space-6) var(--space-6) var(--space-4);
+  overflow: hidden;
+}
+
+/* min-height:0 lets the artwork shrink; without it the progress bar is clipped. */
+.now-column {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+  min-height: 0;
+}
+
+.cards-column {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: var(--space-2);
+}
+
+/* Not inline: the status tag's colours are applied via cssText, which wipes inline layout. */
+.status-tag {
+  margin-left: auto;
+}
+
+.wide-grid h2 {
+  margin: 0 0 2px;
+  font-size: 30px;
+  line-height: 1.05;
+}
+
+.artist {
+  margin: 0;
+  font-size: 16px;
+  color: color-mix(in srgb, var(--color-text) 70%, transparent);
+}
+
+.album {
+  margin: 2px 0 0;
+  font-size: 13px;
+  color: color-mix(in srgb, var(--color-text) 50%, transparent);
+}
+
+/* Sized from height so a square cover cannot push the text out of the column. */
+.art {
+  position: relative;
+  flex: 0 1 auto;
+  height: min(380px, 36vh);
+  width: auto;
+  aspect-ratio: 1 / 1;
+  margin-inline: auto;
+  display: grid;
+  place-items: center;
+  background: var(--color-surface);
+  overflow: hidden;
+}
+
+.art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.art img[hidden] {
+  display: none;
+}
+
+.art-empty {
+  position: absolute;
+  font-size: 12px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--color-text) 40%, transparent);
+}
+
+.progress-block {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.progress-track {
+  height: 3px;
+  background: color-mix(in srgb, var(--color-text) 12%, transparent);
+}
+
+.progress-track>i {
+  display: block;
+  height: 100%;
+  background: var(--color-accent);
+  width: 0;
+}
+
+.progress-times {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: color-mix(in srgb, var(--color-text) 50%, transparent);
+}
+
+.card {
+  padding: var(--space-4);
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.card>div {
+  min-width: 0;
+}
+
+.conn {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  min-width: 0;
+}
+
+.conn>i {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  background: var(--color-neutral-400);
+}
+
+.src-opt {
+  flex: 1;
+  justify-content: center;
+}
+
+.src-opt.unavailable {
+  opacity: .4;
+  cursor: not-allowed;
+  text-decoration: line-through;
+}
+
+.src-opt.unavailable:hover {
+  background: transparent;
+}
+
+.target-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.target-row[hidden] {
+  display: none;
+}
+
+.target-row select {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  min-height: 30px;
+}
+
+.main-btn {
+  flex: none;
+  min-width: 140px;
+  height: 44px;
+  font-size: 15px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.url-row {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-3);
+  border: 1px solid var(--color-divider);
+  background: var(--color-surface);
+}
+
+.url-kind {
+  flex: none;
+  font-size: 10px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--color-text) 45%, transparent);
+}
+
+.url-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
+}
+
+.tunnel-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+}
+
+.tunnel-row>i {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  background: var(--color-neutral-400);
+}
+
+/* - level meter - */
+.meter {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  opacity: .35;
+}
+
+.meter>i {
+  flex: 1 1 0;
+  min-width: 0;
+  background: var(--color-accent);
+  height: 4%;
+}
+
+/* - stream health - */
+.health {
+  flex: none;
+  border-top: 1px solid var(--color-divider);
+}
+
+.health-toggle {
+  width: 100%;
+  justify-content: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-6);
+  color: var(--color-text);
+  border-radius: 0;
+  border: 0;
+}
+
+.health-title {
+  font-family: var(--font-heading);
+  font-size: 13px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.health-stats {
+  margin-left: auto;
+  display: flex;
+  gap: var(--space-6);
+  font-size: 12px;
+  font-family: var(--font-body);
+  font-variant-numeric: tabular-nums;
+  color: color-mix(in srgb, var(--color-text) 55%, transparent);
+}
+
+#log-chevron {
+  transition: transform .12s ease;
+}
+
+body.log-closed #log-chevron {
+  transform: rotate(-90deg);
+}
+
+body.log-closed .health-panel {
+  display: none;
+}
+
+.health-panel {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  gap: var(--space-6);
+  padding: var(--space-3) var(--space-6);
+  border-top: 1px solid var(--color-divider);
+}
+
+.health-table {
+  font-size: 13px;
+  align-self: start;
+  line-height: 1.35;
+}
+
+.health-table th,
+.health-table td {
+  border: 0;
+  padding: 2px 0;
+}
+
+.health-table td {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.health-table tbody tr:hover {
+  background: transparent;
+}
+
+.log-list {
+  min-width: 0;
+  max-height: 108px;
+  overflow: auto;
+  border-left: 1px solid var(--color-divider);
+  padding-left: var(--space-4);
+  user-select: text;
+}
+
+.log-line {
+  display: flex;
+  gap: var(--space-3);
+  font-size: 12px;
+  line-height: 1.7;
+  font-variant-numeric: tabular-nums;
+}
+
+.log-line .t {
+  flex: none;
+  color: color-mix(in srgb, var(--color-text) 40%, transparent);
+}
+
+.log-line .lvl {
+  flex: none;
+  width: 46px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  font-size: 10px;
+  padding-top: 2px;
+  color: color-mix(in srgb, var(--color-text) 40%, transparent);
+}
+
+.log-line.warn .lvl {
+  color: var(--color-accent-700);
+}
+
+.log-line.error .lvl {
+  color: var(--color-accent-900);
+}
+
+.log-line .msg {
+  min-width: 0;
+  word-break: break-word;
+}
+
+/* - settings - */
+.dialog-backdrop[hidden] {
+  display: none;
+}
+
+/* styles.css makes .card/.dialog transparent, which leaves a modal see-through. */
+.dialog {
+  background: var(--color-bg);
+  min-width: 0;
+  max-height: calc(100vh - var(--space-8));
+}
+
+.settings-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  opacity: 1;
+}
+
+/* Segmented controls must be allowed to shrink or the dialog scrolls horizontally. */
+.settings-body .field,
+.settings-body .seg {
+  min-width: 0;
+}
+
+/* `.field > label` outranks `.radio`, flattening a checkbox row nested in a field. */
+.field>label.radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-body .seg-opt {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.grid2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+
+.range {
+  padding: 0;
+  background: transparent;
+  border: 0;
+  accent-color: var(--color-accent);
+}
+
+.res-opt,
+.tunnel-opt {
+  flex: 1;
+  justify-content: center;
+}
+
+#named-fields[hidden] {
+  display: none;
+}
+
+.deps {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.dep {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dep i {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  background: var(--color-neutral-400);
+}
+
+.dep.ok i {
+  background: var(--color-accent);
+}
+
+.dep .path {
+  margin-left: auto;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: color-mix(in srgb, var(--color-text) 45%, transparent);
+}
