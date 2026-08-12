@@ -34,6 +34,14 @@ StreaMuse.exe --probe                          # dump every audio session and SM
 StreaMuse.exe --test-capture [seconds]         # record the resolved source to WAV, report drift
 ```
 
+`.github/workflows/build.yml` builds the release exe: self-contained and single-file, so the whole
+app ships as one file that runs without a .NET install. `IncludeNativeLibrariesForSelfExtract` is
+what pulls `libSkiaSharp.dll` and `WebView2Loader.dll` inside; they load from
+`%TEMP%\.net\StreaMuse\` at runtime. `wwwroot` gets there a different way - the bundler takes
+assemblies, not content - so it is an `EmbeddedResource` served through a
+`ManifestEmbeddedFileProvider` set as the web root, and `StaticWebAssetsEnabled` is off so the asset
+manifest does not ship either. Editing the panel needs a rebuild for the same reason.
+
 There is **no test project**. Verification is done by running the app and checking real behaviour;
 the two diagnostic modes above exist for that. Useful techniques used in practice:
 

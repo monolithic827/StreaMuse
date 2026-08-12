@@ -1,4 +1,5 @@
 using System.Net;
+using Microsoft.Extensions.FileProviders;
 using StreaMuse.App;
 using StreaMuse.Deps;
 using StreaMuse.Settings;
@@ -134,8 +135,7 @@ internal static class Program
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions
         {
             Args = args,
-            ContentRootPath = AppContext.BaseDirectory,
-            WebRootPath = "wwwroot"
+            ContentRootPath = AppContext.BaseDirectory
         });
 
         builder.Logging.ClearProviders();
@@ -155,6 +155,10 @@ internal static class Program
         builder.Services.AddSingleton(pipeline);
 
         var app = builder.Build();
+
+        // wwwroot is compiled into the assembly; there is no web root on disk to serve from.
+        app.Environment.WebRootFileProvider =
+            new ManifestEmbeddedFileProvider(typeof(Program).Assembly, "wwwroot");
 
         app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(20) });
 
