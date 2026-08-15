@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using StreaMuse.State;
 
 namespace StreaMuse.Sources;
@@ -10,14 +9,15 @@ public static class SourceProbe
     public static async Task RunAsync()
     {
         var hub = new StateHub();
+        var tree = ProcessTree.Snapshot();
 
-        Console.WriteLine("=== WASAPI render sessions (default output device) ===");
-        foreach (var session in new AudioSessionScanner().Scan())
+        Console.WriteLine("=== WASAPI render sessions (all active output devices) ===");
+        foreach (var session in AudioSessionScanner.Scan(tree))
         {
             Console.WriteLine(
                 $"  pid={session.ProcessId,-7} {session.ProcessName,-24} " +
                 $"active={session.Active,-5} peak={session.Peak:F3}  \"{session.DisplayName}\"");
-            Console.WriteLine($"      parent : {ParentDescription(session.ProcessId)}");
+            Console.WriteLine($"      parent : {ParentDescription(tree, session.ProcessId)}");
         }
 
         Console.WriteLine();
@@ -43,21 +43,11 @@ public static class SourceProbe
         }
     }
 
-    private static string ParentDescription(int pid)
+    private static string ParentDescription(ProcessTree tree, int pid)
     {
-        var parents = ProcessTree.ParentMap();
-        if (!parents.TryGetValue(pid, out var parent) || parent <= 0) return "unknown";
+        var parent = tree.ParentOf(pid);
+        if (parent <= 0) return "unknown";
 
-        var root = ProcessTree.RootOfSameName(pid, parents);
-
-        try
-        {
-            using var process = Process.GetProcessById(parent);
-            return $"pid={parent} {process.ProcessName}   (same-name root: pid={root})";
-        }
-        catch (Exception)
-        {
-            return $"pid={parent} (gone)   (same-name root: pid={root})";
-        }
+        return $"pid={parent} {tree.NameOf(parent) ?? "(gone)"}   (same-name root: pid={tree.RootOfSameName(pid)})";
     }
 }

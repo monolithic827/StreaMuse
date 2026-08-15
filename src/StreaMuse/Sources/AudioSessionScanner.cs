@@ -1,10 +1,9 @@
-using System.Diagnostics;
 using NAudio.CoreAudioApi;
 using NAudio.CoreAudioApi.Interfaces;
 
 namespace StreaMuse.Sources;
 
-/// <summary>A process currently holding a render session on the default output device.</summary>
+/// <summary>A process holding a render session on some active output device.</summary>
 public sealed record AudioSession(
     int ProcessId,
     string ProcessName,
@@ -12,10 +11,9 @@ public sealed record AudioSession(
     bool Active,
     float Peak);
 
-/// <summary>WASAPI render sessions: which processes are actually producing audio right now.</summary>
-public sealed class AudioSessionScanner
+public static class AudioSessionScanner
 {
-    public IReadOnlyList<AudioSession> Scan()
+    public static IReadOnlyList<AudioSession> Scan(ProcessTree tree)
     {
         var results = new List<AudioSession>();
 
@@ -25,7 +23,7 @@ public sealed class AudioSessionScanner
 
             foreach (var device in enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
             {
-                using (device) AddSessions(device, results);
+                using (device) AddSessions(device, tree, results);
             }
         }
         catch (Exception)
@@ -35,7 +33,7 @@ public sealed class AudioSessionScanner
         return results;
     }
 
-    private static void AddSessions(MMDevice device, List<AudioSession> results)
+    private static void AddSessions(MMDevice device, ProcessTree tree, List<AudioSession> results)
     {
         try
         {
@@ -55,7 +53,7 @@ public sealed class AudioSessionScanner
 
                     results.Add(new AudioSession(
                         pid,
-                        ProcessNameOf(pid),
+                        tree.NameOf(pid) ?? "unknown",
                         SafeDisplayName(session),
                         session.State == AudioSessionState.AudioSessionStateActive,
                         SafePeak(session)));
@@ -67,19 +65,6 @@ public sealed class AudioSessionScanner
         }
         catch (Exception)
         {
-        }
-    }
-
-    public static string ProcessNameOf(int pid)
-    {
-        try
-        {
-            using var process = Process.GetProcessById(pid);
-            return process.ProcessName;
-        }
-        catch (Exception)
-        {
-            return "unknown";
         }
     }
 

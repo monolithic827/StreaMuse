@@ -9,16 +9,12 @@ namespace StreaMuse.Tunnel;
 
 /// <summary>Publishes the HLS port through Cloudflare. Quick tunnels need no account but get a
 /// random hostname, printed on stderr; named tunnels take a token and keep a stable one.</summary>
-public sealed partial class CloudflaredTunnel(AppSettings settings, StateHub hub, DependencyManager deps)
+public sealed partial class CloudflaredTunnel(AppSettings settings, StateHub hub, DependencyManager deps, int publicPort)
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
     private Process? _process;
-    private int _publicPort;
 
     public bool Running => _process is { HasExited: false };
-
-    /// <summary>Set once the HTTP host is listening, so the tunnel knows what to point at.</summary>
-    public void UsePort(int publicPort) => _publicPort = publicPort;
 
     public async Task<bool> StartAsync()
     {
@@ -30,12 +26,6 @@ public sealed partial class CloudflaredTunnel(AppSettings settings, StateHub hub
             if (deps.CloudflaredPath is null)
             {
                 Fail("cloudflared is not available - check the Dependencies panel");
-                return false;
-            }
-
-            if (_publicPort <= 0)
-            {
-                Fail("HLS port is not ready yet");
                 return false;
             }
 
@@ -142,7 +132,7 @@ public sealed partial class CloudflaredTunnel(AppSettings settings, StateHub hub
         :
         [
             "tunnel", "--no-autoupdate",
-            "--url", $"http://127.0.0.1:{_publicPort}"
+            "--url", $"http://127.0.0.1:{publicPort}"
         ];
 
     /// <summary>Watches cloudflared's output for the assigned quick-tunnel hostname.</summary>

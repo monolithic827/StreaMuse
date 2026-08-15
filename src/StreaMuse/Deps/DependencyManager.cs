@@ -4,8 +4,6 @@ using StreaMuse.State;
 
 namespace StreaMuse.Deps;
 
-public sealed record DependencyStatus(string Name, bool Present, string? Path, string? Detail);
-
 /// <summary>
 /// Resolves ffmpeg and cloudflared, downloading official release builds into
 /// %LOCALAPPDATA%\StreaMuse\bin when they are not already on PATH or in that folder.
@@ -23,13 +21,8 @@ public sealed class DependencyManager(StateHub hub)
     public string? FfmpegPath { get; private set; }
     public string? CloudflaredPath { get; private set; }
 
-    public IReadOnlyList<DependencyStatus> Snapshot() =>
-    [
-        new("ffmpeg", FfmpegPath is not null, FfmpegPath, FfmpegPath is null ? "not found" : null),
-        new("cloudflared", CloudflaredPath is not null, CloudflaredPath, CloudflaredPath is null ? "not found" : null)
-    ];
-
-    /// <summary>Resolve both tools, downloading anything missing. Safe to call repeatedly.</summary>
+    /// <summary>Resolves both tools, downloading anything missing, and publishes the result. Safe to
+    /// call repeatedly.</summary>
     public async Task EnsureAllAsync(CancellationToken ct = default)
     {
         await _gate.WaitAsync(ct);
@@ -38,6 +31,12 @@ public sealed class DependencyManager(StateHub hub)
             Directory.CreateDirectory(Paths.BinDir);
             FfmpegPath = await EnsureFfmpegAsync(ct);
             CloudflaredPath = await EnsureCloudflaredAsync(ct);
+
+            hub.SetDependencies(
+            [
+                new("ffmpeg", FfmpegPath),
+                new("cloudflared", CloudflaredPath)
+            ]);
         }
         finally
         {

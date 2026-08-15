@@ -62,8 +62,6 @@ public sealed partial class MainWindow : Form
     {
         base.OnLoad(e);
 
-        // Last point before the window is shown, and the first at which the frame and DPI the
-        // constructor guessed at are settled.
         ClientSize = new Size(DefaultWidth, DefaultHeight);
     }
 
@@ -88,14 +86,10 @@ public sealed partial class MainWindow : Form
     {
         if (_baseMinimum.IsEmpty) return;
 
-        // Scaled from the DPI it was measured at rather than through logical units, so it comes back
-        // exact on the monitor the window opened on.
         var wanted = new Size(
             _baseMinimum.Width * DeviceDpi / _baseDpi,
             _baseMinimum.Height * DeviceDpi / _baseDpi + LogicalToDeviceUnits(_detailsHeight));
 
-        // A floor taller than the screen can show would strand the window's bottom edge out of reach,
-        // so it never asks for more than maximizing would give.
         var ceiling = MaximizedRect(Screen.FromControl(this)).Size;
         var floor = new Size(
             Math.Min(wanted.Width, ceiling.Width),
@@ -121,8 +115,6 @@ public sealed partial class MainWindow : Form
         _detailsHeight = wanted;
         ApplyMinimumSize();
 
-        // Only ever give back what was taken for the pane; a window the user sized themselves has no
-        // slack to reclaim, and shrinking it would resize the layout above for no reason.
         var giveBack = Math.Min(released, _grownForDetails);
         if (giveBack <= 0 || WindowState != FormWindowState.Normal) return;
 
@@ -261,8 +253,6 @@ public sealed partial class MainWindow : Form
                 break;
 
             case "close":
-                // Closing disposes the WebView2 that is dispatching this very message, so it has to
-                // wait until the callback has unwound.
                 BeginInvoke(Close);
                 break;
 

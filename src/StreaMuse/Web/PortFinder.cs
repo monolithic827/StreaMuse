@@ -5,7 +5,6 @@ namespace StreaMuse.Web;
 
 public static class PortFinder
 {
-    /// <summary>The preferred port if free on loopback, else an ephemeral one.</summary>
     public static int Pick(int preferred)
     {
         if (IsFree(preferred)) return preferred;

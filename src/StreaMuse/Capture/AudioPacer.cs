@@ -1,12 +1,11 @@
 using System.Buffers;
-using StreaMuse.Media;
-using StreaMuse.State;
+using System.Diagnostics;
 
 namespace StreaMuse.Capture;
 
 /// <summary>Writes exactly <see cref="SampleRate"/> frames per second of wall clock, filling
 /// silence on underrun, so the encoder never starves. See CLAUDE.md.</summary>
-public sealed class AudioPacer(StateHub hub) : IDisposable
+public sealed class AudioPacer
 {
     public const int SampleRate = ProcessLoopbackCapture.SampleRate;
     public const int Channels = ProcessLoopbackCapture.Channels;
@@ -31,7 +30,6 @@ public sealed class AudioPacer(StateHub hub) : IDisposable
     private long _silenceFrames;
     private long _droppedFrames;
 
-    /// <summary>Feeds the pacer. Safe to call from the capture thread.</summary>
     public void Push(float[] samples)
     {
         if (samples.Length == 0) return;
@@ -76,8 +74,7 @@ public sealed class AudioPacer(StateHub hub) : IDisposable
         }
     }
 
-    /// <summary>Writes paced float32 samples until cancelled; the clock decides how much goes out.</summary>
-    public async Task RunAsync(Stream destination, StreamClock clock, CancellationToken ct)
+    public async Task RunAsync(Stream destination, Stopwatch clock, CancellationToken ct)
     {
         var byteBuffer = ArrayPool<byte>.Shared.Rent(SampleRate * Channels * sizeof(float) / 4);
         var scratch = ArrayPool<float>.Shared.Rent(SampleRate * Channels / 4);
@@ -138,10 +135,6 @@ public sealed class AudioPacer(StateHub hub) : IDisposable
         catch (OperationCanceledException)
         {
         }
-        catch (Exception ex) when (ex is IOException or ObjectDisposedException)
-        {
-            hub.Log(LineLevel.Warn, $"audio pipe closed: {ex.Message}");
-        }
         finally
         {
             ArrayPool<byte>.Shared.Return(byteBuffer);
@@ -180,6 +173,4 @@ public sealed class AudioPacer(StateHub hub) : IDisposable
             return written;
         }
     }
-
-    public void Dispose() => Reset();
 }

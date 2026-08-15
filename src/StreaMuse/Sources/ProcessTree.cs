@@ -1,27 +1,32 @@
-using System.Diagnostics;
 using System.Runtime.InteropServices;
 
 namespace StreaMuse.Sources;
 
-/// <summary>Parent/child lookups via ToolHelp; WMI costs ~100 ms per query and this is polled
-/// every second.</summary>
-public static class ProcessTree
+/// <summary>One ToolHelp snapshot of every process's parent and name. Taken once per poll: WMI
+/// costs ~100 ms per query, and Process.GetProcessById enumerates the whole table each call.</summary>
+public sealed class ProcessTree
 {
-    /// <summary>Every pid on the machine mapped to its parent pid.</summary>
-    public static Dictionary<int, int> ParentMap()
+    private readonly Dictionary<int, (int Parent, string Name)> _entries = new();
+
+    private ProcessTree()
     {
-        var map = new Dictionary<int, int>();
+    }
+
+    public static ProcessTree Snapshot()
+    {
+        var tree = new ProcessTree();
         var snapshot = CreateToolhelp32Snapshot(Th32CsSnapProcess, 0);
-        if (snapshot == IntPtr.Zero || snapshot == InvalidHandle) return map;
+        if (snapshot == IntPtr.Zero || snapshot == InvalidHandle) return tree;
 
         try
         {
             var entry = new ProcessEntry32 { dwSize = (uint)Marshal.SizeOf<ProcessEntry32>() };
-            if (!Process32First(snapshot, ref entry)) return map;
+            if (!Process32First(snapshot, ref entry)) return tree;
 
             do
             {
-                map[(int)entry.th32ProcessID] = (int)entry.th32ParentProcessID;
+                tree._entries[(int)entry.th32ProcessID] =
+                    ((int)entry.th32ParentProcessID, Path.GetFileNameWithoutExtension(entry.szExeFile));
             }
             while (Process32Next(snapshot, ref entry));
         }
@@ -30,35 +35,36 @@ public static class ProcessTree
             CloseHandle(snapshot);
         }
 
-        return map;
+        return tree;
     }
+
+    /// <summary>Executable name without extension, as Process.ProcessName reports it.</summary>
+    public string? NameOf(int pid) => _entries.TryGetValue(pid, out var entry) ? entry.Name : null;
+
+    public int ParentOf(int pid) => _entries.TryGetValue(pid, out var entry) ? entry.Parent : 0;
 
     /// <summary>Outermost ancestor sharing the same process name, so capture covers the whole app
     /// rather than the one child that happens to render audio.</summary>
-    public static int RootOfSameName(int pid, Dictionary<int, int>? parents = null)
+    public int RootOfSameName(int pid)
     {
-        parents ??= ParentMap();
-
         var name = NameOf(pid);
         if (name is null) return pid;
 
         var current = pid;
         var guard = 0;
 
-        while (guard++ < 32 && parents.TryGetValue(current, out var parent) && parent > 0)
+        while (guard++ < 32 && _entries.TryGetValue(current, out var entry) && entry.Parent > 0)
         {
-            if (!string.Equals(NameOf(parent), name, StringComparison.OrdinalIgnoreCase)) break;
-            current = parent;
+            if (!string.Equals(NameOf(entry.Parent), name, StringComparison.OrdinalIgnoreCase)) break;
+            current = entry.Parent;
         }
 
         return current;
     }
 
     /// <summary>True for this process or its children; our own WebView2 must never be a target.</summary>
-    public static bool IsSelfOrDescendant(int pid, Dictionary<int, int>? parents = null)
+    public bool IsSelfOrDescendant(int pid)
     {
-        parents ??= ParentMap();
-
         var self = Environment.ProcessId;
         var current = pid;
         var guard = 0;
@@ -66,24 +72,11 @@ public static class ProcessTree
         while (guard++ < 64 && current > 0)
         {
             if (current == self) return true;
-            if (!parents.TryGetValue(current, out var parent) || parent == current) break;
-            current = parent;
+            if (!_entries.TryGetValue(current, out var entry) || entry.Parent == current) break;
+            current = entry.Parent;
         }
 
         return false;
-    }
-
-    private static string? NameOf(int pid)
-    {
-        try
-        {
-            using var process = Process.GetProcessById(pid);
-            return process.ProcessName;
-        }
-        catch (Exception)
-        {
-            return null;
-        }
     }
 
     private const uint Th32CsSnapProcess = 0x00000002;

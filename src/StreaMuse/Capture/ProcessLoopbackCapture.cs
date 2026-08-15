@@ -13,14 +13,11 @@ public sealed class ProcessLoopbackCapture(StateHub hub) : IDisposable
     public const int Channels = 2;
 
     private WasapiRecorder? _recorder;
-    private int _pid;
 
-    /// <summary>Interleaved 32-bit float samples, in capture order.</summary>
-    public event Action<ReadOnlyMemory<float>>? SamplesAvailable;
+    /// <summary>Interleaved 32-bit float samples, in capture order. The array is the receiver's.</summary>
+    public event Action<float[]>? SamplesAvailable;
 
-    public bool Running => _recorder is not null;
-
-    public int ProcessId => _pid;
+    public int ProcessId { get; private set; }
 
     public async Task<bool> StartAsync(int processId)
     {
@@ -39,7 +36,7 @@ public sealed class ProcessLoopbackCapture(StateHub hub) : IDisposable
             recorder.StartRecording();
 
             _recorder = recorder;
-            _pid = processId;
+            ProcessId = processId;
 
             hub.Log(LineLevel.Info, $"capture attached to pid {processId} - 48 kHz / 2 ch float");
             return true;
@@ -47,8 +44,6 @@ public sealed class ProcessLoopbackCapture(StateHub hub) : IDisposable
         catch (Exception ex)
         {
             hub.Log(LineLevel.Error, $"could not attach capture to pid {processId}: {ex.Message}");
-            _recorder = null;
-            _pid = 0;
             return false;
         }
     }
@@ -77,7 +72,7 @@ public sealed class ProcessLoopbackCapture(StateHub hub) : IDisposable
         {
         }
 
-        _pid = 0;
+        ProcessId = 0;
     }
 
     /// <summary>The span is valid only for this call; copy before it leaves the capture thread.</summary>

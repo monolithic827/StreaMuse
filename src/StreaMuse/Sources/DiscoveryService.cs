@@ -10,7 +10,6 @@ public sealed class DiscoveryService(
     StateHub hub,
     ArtworkStore artwork)
 {
-    private readonly AudioSessionScanner _scanner = new();
     private readonly SourceResolver _resolver = new();
     private readonly SmtcMetadataService _smtc = new(hub);
 
@@ -21,10 +20,8 @@ public sealed class DiscoveryService(
     private int _artworkPolls;
     private ResolvedSource _current = ResolvedSource.None(MusicSource.External, "Starting up…");
 
-    /// <summary>Latest resolution, read by the capture pipeline when it (re)starts.</summary>
     public ResolvedSource Current => _current;
 
-    /// <summary>Raised when the capture target changes, so a running stream can retarget.</summary>
     public event Action<ResolvedSource>? TargetChanged;
 
     public async Task RunAsync(CancellationToken ct)
@@ -48,33 +45,36 @@ public sealed class DiscoveryService(
 
     private async Task PollAsync()
     {
-        var audioSessions = _scanner.Scan();
+        var tree = ProcessTree.Snapshot();
+        var audioSessions = AudioSessionScanner.Scan(tree);
 
-        // Artwork is expensive; fetch it only when the track changes.
-        var lightweight = await _smtc.ReadAllAsync(includeArtwork: false);
-        var resolved = _resolver.Resolve(settings.Source, settings.ManualProcessId, audioSessions, lightweight);
+        // Artwork is expensive, so it is read only while a track change is being chased.
+        var mediaSessions = await _smtc.ReadAllAsync(includeArtwork: _artworkPolls > 0);
+        var resolved = _resolver.Resolve(settings.Source, settings.ManualProcessId, audioSessions, mediaSessions, tree);
 
         var identity = Identity(resolved.Metadata);
-        if (identity != _lastIdentity)
+        var changed = identity != _lastIdentity;
+        if (changed)
         {
             _lastIdentity = identity;
+
+            if (_artworkPolls == 0)
+            {
+                mediaSessions = await _smtc.ReadAllAsync(includeArtwork: true);
+                resolved = _resolver.Resolve(settings.Source, settings.ManualProcessId, audioSessions, mediaSessions, tree);
+            }
+
             _artworkPolls = ArtworkPolls;
         }
 
         if (_artworkPolls > 0)
         {
-            var first = _artworkPolls == ArtworkPolls;
-
-            var withArtwork = await _smtc.ReadAllAsync(includeArtwork: true);
-            resolved = _resolver.Resolve(settings.Source, settings.ManualProcessId, audioSessions, withArtwork);
             var found = resolved.Metadata?.Artwork;
+            var replaced = (found is not null || changed) && artwork.Set(found);
 
-            // The cover still on screen belongs to the track that just ended, so it goes as soon as
-            // the first read comes back without one; the polls after that are the app still fetching.
-            if ((found is not null || first) &&
-                artwork.Set(found) && found is not null && resolved.Metadata is not null)
+            if (replaced && found is not null)
             {
-                hub.Log(LineLevel.Info, $"now playing - {resolved.Metadata.Title} · {resolved.Metadata.Artist}");
+                hub.Log(LineLevel.Info, $"now playing - {resolved.Metadata!.Title} · {resolved.Metadata.Artist}");
             }
 
             _artworkPolls = found is null ? _artworkPolls - 1 : 0;
@@ -92,7 +92,7 @@ public sealed class DiscoveryService(
             _resolver.Availability()
                 .Select(a => new SourceOption(a.Source.ToString().ToLowerInvariant(), a.Available, a.Reason))
                 .ToList(),
-            SourceResolver.CaptureTargets(audioSessions)));
+            SourceResolver.CaptureTargets(audioSessions, tree)));
 
         hub.SetNowPlaying(ToNowPlaying(resolved.Metadata, artwork.Version));
 

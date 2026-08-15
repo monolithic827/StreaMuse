@@ -1,24 +1,21 @@
-using StreaMuse.State;
+using System.Diagnostics;
 
 namespace StreaMuse.Media;
 
 /// <summary>Pushes exactly fps JPEG frames per second of wall clock. image2pipe timestamps by
 /// frame index, so this is what locks video to audio.</summary>
-public sealed class VideoPacer(CoverFrameRenderer renderer, StateHub hub)
+public sealed class VideoPacer(CoverFrameRenderer renderer)
 {
-    public long FramesWritten { get; private set; }
-
-    public void Reset() => FramesWritten = 0;
-
-    public async Task RunAsync(Stream destination, StreamClock clock, int fps, CancellationToken ct)
+    public async Task RunAsync(Stream destination, Stopwatch clock, int fps, CancellationToken ct)
     {
         var interval = Math.Max(1, 1000 / Math.Max(fps, 1));
+        var framesWritten = 0L;
 
         try
         {
             while (!ct.IsCancellationRequested)
             {
-                var due = clock.ElapsedMilliseconds * fps / 1000 - FramesWritten;
+                var due = clock.ElapsedMilliseconds * fps / 1000 - framesWritten;
 
                 if (due <= 0)
                 {
@@ -33,7 +30,7 @@ public sealed class VideoPacer(CoverFrameRenderer renderer, StateHub hub)
                 for (var i = 0; i < frames; i++)
                 {
                     await destination.WriteAsync(jpeg, ct);
-                    FramesWritten++;
+                    framesWritten++;
                 }
 
                 await destination.FlushAsync(ct);
@@ -42,14 +39,6 @@ public sealed class VideoPacer(CoverFrameRenderer renderer, StateHub hub)
         }
         catch (OperationCanceledException)
         {
-        }
-        catch (IOException ex)
-        {
-            hub.Log(LineLevel.Warn, $"video pipe closed: {ex.Message}");
-        }
-        catch (Exception ex)
-        {
-            hub.Log(LineLevel.Error, $"video pacer failed: {ex.Message}");
         }
     }
 }

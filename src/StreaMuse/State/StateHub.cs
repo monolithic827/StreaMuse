@@ -13,12 +13,11 @@ public sealed class StateHub
 {
     private const int LogCapacity = 200;
 
-    private static readonly JsonSerializerOptions Json = new()
+    /// <summary>Shared with ControlApi: the panel takes its first paint from /api/state and every
+    /// update from the socket, so both must serialize identically.</summary>
+    public static readonly JsonSerializerOptions Json = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        DefaultIgnoreCondition = JsonIgnoreCondition.Never,
-
-        // Must match ControlApi: first paint comes from /api/state, updates from this socket.
         Converters = { new JsonStringEnumConverter() }
     };
 
@@ -40,8 +39,8 @@ public sealed class StateHub
     private IReadOnlyList<DependencyView> _deps = [];
     private string? _localUrl;
 
-    /// <summary>Supplies the settings object embedded in each snapshot.</summary>
-    public Func<object>? SettingsProvider { get; set; }
+    /// <summary>Embedded in each snapshot; the live instance, so every save is reflected.</summary>
+    public object Settings { get; init; } = new { };
 
     public void SetSource(SourceState value) => Mutate(() => _source = value);
 
@@ -91,7 +90,7 @@ public sealed class StateHub
                 [.. _log],
                 _localUrl,
                 Environment.MachineName.ToLowerInvariant(),
-                SettingsProvider?.Invoke() ?? new { });
+                Settings);
         }
     }
 
@@ -107,7 +106,7 @@ public sealed class StateHub
 
         try
         {
-            await SendAsync(client, Snapshot(), CancellationToken.None);
+            await SendAsync(client, JsonSerializer.SerializeToUtf8Bytes(Snapshot(), Json));
 
             // Push-only; reading just holds the socket open until the client leaves.
             var buffer = new byte[1024];
@@ -151,7 +150,7 @@ public sealed class StateHub
 
             try
             {
-                await SendRawAsync(client, bytes, CancellationToken.None);
+                await SendAsync(client, bytes);
             }
             catch (Exception)
             {
@@ -160,15 +159,12 @@ public sealed class StateHub
         }
     }
 
-    private static Task SendAsync(Client client, object payload, CancellationToken ct) =>
-        SendRawAsync(client, JsonSerializer.SerializeToUtf8Bytes(payload, Json), ct);
-
-    private static async Task SendRawAsync(Client client, byte[] bytes, CancellationToken ct)
+    private static async Task SendAsync(Client client, byte[] bytes)
     {
-        await client.SendGate.WaitAsync(ct);
+        await client.SendGate.WaitAsync();
         try
         {
-            await client.Socket.SendAsync(bytes, WebSocketMessageType.Text, true, ct);
+            await client.Socket.SendAsync(bytes, WebSocketMessageType.Text, true, CancellationToken.None);
         }
         finally
         {

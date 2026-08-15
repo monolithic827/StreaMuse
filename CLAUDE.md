@@ -62,7 +62,7 @@ DiscoveryService (1 Hz) ──> StateHub ──> WebSocket ──> control panel
 SourceResolver ──> capture pid
       │
 StreamPipeline:  ProcessLoopbackCapture ──> AudioPacer ─┐
-                 CoverFrameRenderer ──────> VideoPacer ─┤ (one shared StreamClock)
+                 CoverFrameRenderer ──────> VideoPacer ─┤ (one shared Stopwatch)
                                                         ▼
                         \\.\pipe\streamuse-{audio,video} ──> ffmpeg ──> %LOCALAPPDATA%\StreaMuse\hls
                                                                               │
@@ -132,11 +132,13 @@ is not enough on Windows: `Path.Combine` discards its first argument for a drive
 **Pacing (the reason the stream never stalls)**
 - Process loopback delivers *nothing* while the source is paused. `AudioPacer` therefore writes
   exactly 48 000 frames per second of wall clock, filling silence on underrun, and `VideoPacer`
-  emits a fixed frame rate from the same `StreamClock`. Both demuxers derive timestamps from data
+  emits a fixed frame rate from the same `Stopwatch`. Both demuxers derive timestamps from data
   received, so this is also what keeps A/V in sync. Never make either pacer emit on source activity.
-- A pacer only returns when it can no longer write, so its exit has to end the session. Silence is
-  the *designed* output for a paused source, which means a dead pacer looks identical to a quiet one
-  from the outside - nothing else will notice.
+- A pacer only returns when it can no longer write, so its exit has to end the session - that is
+  what `RunPacerAsync` wraps both in. Silence is the *designed* output for a paused source, which
+  means a dead pacer looks identical to a quiet one from the outside - nothing else will notice.
+  Several paths can report one fault (both pacers see the broken pipe, then the encoder exits);
+  `StopCoreAsync` is a no-op once the session is gone, so only the first does anything.
 - Every teardown path in `StreamPipeline` holds `_gate`, including the one the encoder's `Exited`
   handler takes; `StopCoreAsync` is the ungated body for callers already holding it. Tearing down
   beside a running `StartAsync` leaves capture attached to a session that no longer exists.
@@ -144,7 +146,7 @@ is not enough on Windows: `Path.Combine` discards its first argument for a drive
   both outlive the pacers: a pipe disposed under a write, and a `Task.Delay` registering on a
   disposed source, each throw where nothing is watching. Kill the encoder first so a blocked write
   faults, and keep the drain bounded. Nothing a pacer calls back into during it may want `_gate` -
-  the drain holds it - which is why `RunVideoAsync` and the encoder's `Exited` handler detach their
+  the drain holds it - which is why `RunPacerAsync` and the encoder's `Exited` handler detach their
   stops.
 
 **ffmpeg**
@@ -168,6 +170,8 @@ is not enough on Windows: `Path.Combine` discards its first argument for a drive
   never reaches it: capturing the process behind the window records pure silence. Availability still
   keys on `AppleMusic.exe` - the agent outlives the window - but the capture target must be the
   agent, which is why `AppleAudioProcessNames` is a separate list and lists it first.
+- `ManualProcessId` persists across runs while pids are recycled, so a manual pid that is not in
+  the process snapshot resolves as *not detected* rather than as a target that fails at attach time.
 - Auto target election prefers whichever candidate SMTC reports as *playing*. Do not elect on
   `MasterPeakValue`: it is an instantaneous sample, so every gap in the audio flips the target,
   which blinks the metadata and reattaches capture mid-stream. Loudness is a fallback only, and the
@@ -178,6 +182,10 @@ is not enough on Windows: `Path.Combine` discards its first argument for a drive
 - Matching app id to process is not name comparison. Chromium forks run as `chrome.exe` but report
   e.g. `Helium.E2M2QCR2GB7Q3BNR56GK5FAO5Y`; the executable's product name and file description
   bridge the two.
+- Discovery takes one `ProcessTree.Snapshot()` per poll and derives every process name and parent
+  from it. `Process.GetProcessById` enumerates the whole process table on each call, so nothing on
+  the poll path should open a `Process` except `ProcessIdentity`, which needs the start time and
+  version resources.
 - `ProcessIdentity` caches those lookups per *process instance* - pid plus start time - because
   Windows recycles pids, and an entry outliving its process would hand one app's metadata to
   whatever inherited the number. A lookup that fails is never cached, or one unreadable poll would
@@ -198,13 +206,14 @@ is not enough on Windows: `Path.Combine` discards its first argument for a drive
   `/api/art?v=`. That response is `immutable` for a year and WebView2's cache outlives the process,
   so a counter restarting at 1 each run served the panel the *previous* run's covers - while the
   video, which reads the bytes in-process, looked correct. Keep any cache key here content-derived.
+  It is also forced odd, so it can never be 0 - the panel reads 0 as "no artwork".
 
 **Serialization and background tasks**
 - Never put a non-finite `double` into anything serialized. `System.Text.Json` refuses to write
   infinity, and because the telemetry loop is fire-and-forget the throw silently froze the meter and
   all stream statistics. Use `null` (see `LevelMeter.Read`).
-- `StateHub` and `ControlApi` must keep matching `JsonSerializerOptions` - the panel takes its first
-  paint from `/api/state` and every update from the socket, so enums have to look the same on both.
+- `ControlApi` serializes with `StateHub.Json` - the panel takes its first paint from `/api/state`
+  and every update from the socket, so both must look the same.
 - Detached tasks must log their exceptions. Anything swallowed here is invisible and presents as a
   frozen UI.
 - Nothing in `Program.Shutdown` may throw. It runs after `Application.Run` returns, so the window is

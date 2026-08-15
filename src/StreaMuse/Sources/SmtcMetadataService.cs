@@ -5,7 +5,6 @@ using Windows.Storage.Streams;
 
 namespace StreaMuse.Sources;
 
-/// <summary>What one app is reporting to the Windows media transport controls.</summary>
 public sealed record SmtcSession(
     string AppId,
     string Title,
@@ -16,7 +15,6 @@ public sealed record SmtcSession(
     double DurationSeconds,
     byte[]? Artwork);
 
-/// <summary>Now-playing metadata from the Windows media transport controls.</summary>
 public sealed class SmtcMetadataService(StateHub hub)
 {
     private readonly MediaThread _thread = new();
@@ -36,7 +34,6 @@ public sealed class SmtcMetadataService(StateHub hub)
         }
     });
 
-    /// <summary>All sessions currently registered with the system, newest artwork included.</summary>
     public Task<IReadOnlyList<SmtcSession>> ReadAllAsync(bool includeArtwork) =>
         _thread.RunAsync<IReadOnlyList<SmtcSession>>(async () =>
         {

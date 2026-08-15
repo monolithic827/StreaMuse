@@ -1,32 +1,27 @@
 using System.Diagnostics;
 using System.Globalization;
-using System.Text.RegularExpressions;
 using StreaMuse.App;
+using StreaMuse.Capture;
 using StreaMuse.Settings;
 using StreaMuse.State;
 
 namespace StreaMuse.Media;
 
-/// <summary>Numbers scraped from ffmpeg's -progress stream.</summary>
-public sealed record EncoderProgress(int BitrateKbps, long Frames, long DroppedFrames, double OutTimeSeconds);
-
-/// <summary>Owns the ffmpeg child process muxing the two paced pipes into HLS.</summary>
-public sealed partial class FfmpegEncoder(StateHub hub)
+public sealed class FfmpegEncoder(StateHub hub)
 {
     private Process? _process;
 
     public string AudioPipeName { get; } = $"streamuse-audio-{Guid.NewGuid():N}";
     public string VideoPipeName { get; } = $"streamuse-video-{Guid.NewGuid():N}";
 
-    public EncoderProgress Progress { get; private set; } = new(0, 0, 0, 0);
-
-    public bool Running => _process is { HasExited: false };
+    /// <summary>From ffmpeg's -progress stream. Bitrate is not read from there: the HLS muxer
+    /// reports N/A, so HlsOutput measures it from segment sizes instead.</summary>
+    public long DroppedFrames { get; private set; }
 
     public event Action<int>? Exited;
 
     public void Start(string ffmpegPath, AppSettings settings, string outputDirectory)
     {
-        var arguments = BuildArguments(settings, outputDirectory);
         hub.Log(LineLevel.Info, $"encoder starting - {settings.Width}x{settings.Height} @ {settings.Fps} fps, " +
                                 $"v {settings.VideoBitrateKbps}k / a {settings.AudioBitrateKbps}k");
 
@@ -39,7 +34,7 @@ public sealed partial class FfmpegEncoder(StateHub hub)
             CreateNoWindow = true
         };
 
-        foreach (var argument in arguments) info.ArgumentList.Add(argument);
+        foreach (var argument in BuildArguments(settings, outputDirectory)) info.ArgumentList.Add(argument);
 
         var process = new Process { StartInfo = info, EnableRaisingEvents = true };
         process.OutputDataReceived += OnProgressLine;
@@ -59,50 +54,46 @@ public sealed partial class FfmpegEncoder(StateHub hub)
         _process = process;
     }
 
-    public IReadOnlyList<string> BuildArguments(AppSettings settings, string outputDirectory)
+    private IReadOnlyList<string> BuildArguments(AppSettings settings, string outputDirectory)
     {
-        var audioPipe = $@"\\.\pipe\{AudioPipeName}";
-        var videoPipe = $@"\\.\pipe\{VideoPipeName}";
-        var fps = settings.Fps;
+        var fps = settings.Fps.ToString(CultureInfo.InvariantCulture);
+        var sampleRate = ProcessLoopbackCapture.SampleRate.ToString(CultureInfo.InvariantCulture);
 
         return
         [
             "-hide_banner", "-nostdin",
             "-loglevel", "level+warning",
 
-            // Probing must stay off: the default 5s probe starves the audio pipe (CLAUDE.md).
             "-analyzeduration", "0",
             "-probesize", "32",
             "-thread_queue_size", "1024",
             "-f", "f32le",
-            "-ar", ProcessLoopbackSampleRate.ToString(CultureInfo.InvariantCulture),
+            "-ar", sampleRate,
             "-ac", "2",
-            "-i", audioPipe,
+            "-i", $@"\\.\pipe\{AudioPipeName}",
 
             // probesize must still admit one whole JPEG.
             "-analyzeduration", "0",
             "-probesize", "5000000",
             "-thread_queue_size", "256",
             "-f", "image2pipe",
-            "-framerate", fps.ToString(CultureInfo.InvariantCulture),
-            "-i", videoPipe,
+            "-framerate", fps,
+            "-i", $@"\\.\pipe\{VideoPipeName}",
 
             "-map", "1:v:0", "-map", "0:a:0",
 
-            // JPEG input is full-range and would otherwise leak out as yuvj420p.
             "-vf", "scale=in_range=full:out_range=tv,format=yuv420p",
             "-color_range", "tv",
 
-            // Fixed GOP: one keyframe per second, matching -hls_time 1.
             "-c:v", "libx264",
             "-preset", "veryfast",
             "-tune", "stillimage",
             "-profile:v", "main",
             "-level", "3.1",
             "-pix_fmt", "yuv420p",
-            "-r", fps.ToString(CultureInfo.InvariantCulture),
-            "-g", fps.ToString(CultureInfo.InvariantCulture),
-            "-keyint_min", fps.ToString(CultureInfo.InvariantCulture),
+            "-r", fps,
+            "-g", fps,
+            "-keyint_min", fps,
             "-sc_threshold", "0",
             "-b:v", $"{settings.VideoBitrateKbps}k",
             "-maxrate", $"{(int)(settings.VideoBitrateKbps * 1.25)}k",
@@ -110,7 +101,7 @@ public sealed partial class FfmpegEncoder(StateHub hub)
 
             "-c:a", "aac",
             "-b:a", $"{settings.AudioBitrateKbps}k",
-            "-ar", "48000",
+            "-ar", sampleRate,
             "-ac", "2",
 
             "-fps_mode", "cfr",
@@ -153,28 +144,13 @@ public sealed partial class FfmpegEncoder(StateHub hub)
 
     private void OnProgressLine(object? sender, DataReceivedEventArgs e)
     {
-        if (string.IsNullOrEmpty(e.Data)) return;
+        if (e.Data is null || !e.Data.StartsWith("drop_frames=", StringComparison.Ordinal)) return;
 
-        var separator = e.Data.IndexOf('=');
-        if (separator <= 0) return;
-
-        var key = e.Data[..separator];
-        var value = e.Data[(separator + 1)..];
-
-        var current = Progress;
-
-        Progress = key switch
+        if (long.TryParse(e.Data.AsSpan("drop_frames=".Length), NumberStyles.Integer,
+                CultureInfo.InvariantCulture, out var dropped))
         {
-            // HLS reports N/A; the real figure comes from HlsOutput.MeasureBitrateKbps.
-            "bitrate" => current with { BitrateKbps = ParseBitrate(value) },
-            "frame" => current with { Frames = ParseLong(value, current.Frames) },
-            "drop_frames" => current with { DroppedFrames = ParseLong(value, current.DroppedFrames) },
-            "out_time_us" => current with
-            {
-                OutTimeSeconds = ParseLong(value, 0) / 1_000_000.0
-            },
-            _ => current
-        };
+            DroppedFrames = dropped;
+        }
     }
 
     private void OnLogLine(object? sender, DataReceivedEventArgs e)
@@ -194,23 +170,6 @@ public sealed partial class FfmpegEncoder(StateHub hub)
         hub.Log(level, $"ffmpeg: {Shorten(line)}");
     }
 
-    private const int ProcessLoopbackSampleRate = 48_000;
-
-    /// <summary>ffmpeg reports bitrate as e.g. "4380.2kbits/s", or "N/A" before the first frame.</summary>
-    private static int ParseBitrate(string value)
-    {
-        var match = BitrateRegex().Match(value);
-        return match.Success && double.TryParse(match.Groups[1].Value, NumberStyles.Float,
-            CultureInfo.InvariantCulture, out var parsed)
-            ? (int)Math.Round(parsed)
-            : 0;
-    }
-
-    private static long ParseLong(string value, long fallback) =>
-        long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
-            ? parsed
-            : fallback;
-
     private static int SafeExitCode(Process process)
     {
         try
@@ -224,7 +183,4 @@ public sealed partial class FfmpegEncoder(StateHub hub)
     }
 
     private static string Shorten(string line) => line.Length <= 200 ? line : line[..200] + "…";
-
-    [GeneratedRegex(@"([\d.]+)\s*kbits/s")]
-    private static partial Regex BitrateRegex();
 }

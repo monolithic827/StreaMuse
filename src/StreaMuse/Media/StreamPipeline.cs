@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO.Pipes;
 using StreaMuse.Capture;
 using StreaMuse.Deps;
@@ -8,7 +9,6 @@ using StreaMuse.Tunnel;
 
 namespace StreaMuse.Media;
 
-/// <summary>Orchestrates a streaming session: capture -> pacers -> ffmpeg -> HLS -> tunnel.</summary>
 public sealed class StreamPipeline(
     AppSettings settings,
     StateHub hub,
@@ -18,13 +18,12 @@ public sealed class StreamPipeline(
     CloudflaredTunnel tunnel)
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
-    private readonly StreamClock _clock = new();
-    private readonly AudioPacer _audioPacer = new(hub);
+    private readonly Stopwatch _clock = new();
+    private readonly AudioPacer _audioPacer = new();
     private readonly LevelMeter _meter = new();
 
     private ProcessLoopbackCapture? _capture;
     private FfmpegEncoder? _encoder;
-    private VideoPacer? _videoPacer;
     private CancellationTokenSource? _session;
     private Task? _sessionTasks;
     private NamedPipeServerStream? _audioPipe;
@@ -33,7 +32,6 @@ public sealed class StreamPipeline(
 
     public bool Running => _session is { IsCancellationRequested: false };
 
-    /// <summary>Restarts only the capture attachment when discovery points at a different process.</summary>
     public void OnTargetChanged(ResolvedSource resolved)
     {
         if (!Running || _capture is null) return;
@@ -54,8 +52,7 @@ public sealed class StreamPipeline(
             if (!Running || _capture is null) return;
             if (await _capture.StartAsync(processId)) return;
 
-            Fail("could not reattach audio capture");
-            await StopCoreAsync();
+            await AbortAsync("could not reattach audio capture");
         }
         finally
         {
@@ -89,14 +86,10 @@ public sealed class StreamPipeline(
             _session = session;
 
             HlsOutput.Prepare();
-            _audioPacer.Reset();
             _meter.Reset();
             _reportedShedSeconds = 0;
 
-            var renderer = new CoverFrameRenderer(settings, artwork, hub);
-            var videoPacer = new VideoPacer(renderer, hub);
-            _videoPacer = videoPacer;
-
+            var videoPacer = new VideoPacer(new CoverFrameRenderer(settings, artwork, hub));
             var encoder = new FfmpegEncoder(hub);
             _encoder = encoder;
 
@@ -113,8 +106,9 @@ public sealed class StreamPipeline(
             _audioPipe = audioPipe;
             _videoPipe = videoPipe;
 
-            var audioConnected = audioPipe.WaitForConnectionAsync(session.Token);
-            var videoConnected = videoPipe.WaitForConnectionAsync(session.Token);
+            var connected = Task.WhenAll(
+                audioPipe.WaitForConnectionAsync(session.Token),
+                videoPipe.WaitForConnectionAsync(session.Token));
 
             encoder.Exited += code =>
             {
@@ -125,35 +119,26 @@ public sealed class StreamPipeline(
 
             encoder.Start(deps.FfmpegPath, settings, Paths.HlsDir);
 
-            using (var connectTimeout = CancellationTokenSource.CreateLinkedTokenSource(session.Token))
+            try
             {
-                connectTimeout.CancelAfter(TimeSpan.FromSeconds(10));
-                try
-                {
-                    await Task.WhenAll(audioConnected, videoConnected).WaitAsync(connectTimeout.Token);
-                }
-                catch (Exception)
-                {
-                    Fail("ffmpeg never connected to the capture pipes");
-                    await StopCoreAsync();
-                    return false;
-                }
+                await connected.WaitAsync(TimeSpan.FromSeconds(10), session.Token);
+            }
+            catch (Exception)
+            {
+                return await AbortAsync("ffmpeg never connected to the capture pipes");
             }
 
             var capture = new ProcessLoopbackCapture(hub);
             capture.SamplesAvailable += samples =>
             {
-                var array = samples.ToArray();
-                _meter.Add(array);
-                _audioPacer.Push(array);
+                _meter.Add(samples);
+                _audioPacer.Push(samples);
             };
             _capture = capture;
 
             if (!await capture.StartAsync(resolved.CaptureProcessId))
             {
-                Fail("could not attach audio capture");
-                await StopCoreAsync();
-                return false;
+                return await AbortAsync("could not attach audio capture");
             }
 
             // Audio buffered before the clock started is stale and would overrun the buffer at once.
@@ -162,8 +147,8 @@ public sealed class StreamPipeline(
 
             var token = session.Token;
             _sessionTasks = Task.WhenAll(
-                Task.Run(() => _audioPacer.RunAsync(audioPipe, _clock, token)),
-                Task.Run(() => RunVideoAsync(videoPacer, videoPipe, token)),
+                Task.Run(() => RunPacerAsync("audio", () => _audioPacer.RunAsync(audioPipe, _clock, token), token)),
+                Task.Run(() => RunPacerAsync("video", () => videoPacer.RunAsync(videoPipe, _clock, settings.Fps, token), token)),
                 Task.Run(() => PublishTelemetryAsync(token)));
 
             hub.SetEncoder(new EncoderState(StreamStatus.Running, 0, settings.Fps, 0, 0, null));
@@ -175,9 +160,7 @@ public sealed class StreamPipeline(
         }
         catch (Exception ex)
         {
-            Fail(ex.Message);
-            await StopCoreAsync();
-            return false;
+            return await AbortAsync(ex.Message);
         }
         finally
         {
@@ -198,22 +181,28 @@ public sealed class StreamPipeline(
         }
     }
 
-    /// <summary>Teardown without the gate, for the paths that already hold it.</summary>
+    private async Task<bool> AbortAsync(string message)
+    {
+        Fail(message);
+        await StopCoreAsync();
+        return false;
+    }
+
     private async Task StopCoreAsync()
     {
+        // Every failure path stops the stream, and several can fire for one fault (both pacers see
+        // the broken pipe, then the encoder reports it exited). Only the first has anything to do.
         var session = Interlocked.Exchange(ref _session, null);
-        session?.Cancel();
+        if (session is null) return;
 
-        _capture?.Stop();
+        session.Cancel();
+
         _capture?.Dispose();
         _capture = null;
 
         _encoder?.Stop();
         _encoder = null;
 
-        // The pacers write into the pipes and wait on the session token, so both outlive them: a
-        // pipe disposed under a write throws ObjectDisposedException, and so does a Task.Delay
-        // registering on a disposed source. ffmpeg is gone by here, so a blocked write has faulted.
         await DrainSessionAsync();
 
         await DisposePipeAsync(_audioPipe);
@@ -222,8 +211,7 @@ public sealed class StreamPipeline(
         _videoPipe = null;
 
         _clock.Stop();
-        _videoPacer = null;
-        session?.Dispose();
+        session.Dispose();
 
         if (hub.Encoder.Status != StreamStatus.Error)
         {
@@ -251,20 +239,27 @@ public sealed class StreamPipeline(
         }
     }
 
-    /// <summary>The pacer returns only when it can no longer write frames, so an exit the session
-    /// did not ask for leaves a stream reporting Running with frozen video. The stop is detached
-    /// because a teardown draining this task holds the gate the stop needs.</summary>
-    private async Task RunVideoAsync(VideoPacer pacer, Stream destination, CancellationToken ct)
+    /// <summary>A pacer returns only when it can no longer write, so an exit the session did not ask
+    /// for would leave a stream reporting Running with frozen output. The stop is detached because a
+    /// teardown draining this task holds the gate the stop needs.</summary>
+    private async Task RunPacerAsync(string track, Func<Task> pacer, CancellationToken ct)
     {
-        await pacer.RunAsync(destination, _clock, settings.Fps, ct);
+        string? fault = null;
+        try
+        {
+            await pacer();
+        }
+        catch (Exception ex)
+        {
+            fault = ex.Message;
+        }
 
         if (ct.IsCancellationRequested) return;
 
-        Fail("video pacing stopped");
+        Fail(fault is null ? $"{track} pacing stopped" : $"{track} pacing stopped: {fault}");
         _ = StopAsync();
     }
 
-    /// <summary>Pushes the meter at ~10 Hz and encoder stats at 1 Hz.</summary>
     private async Task PublishTelemetryAsync(CancellationToken ct)
     {
         using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(100));
@@ -279,9 +274,6 @@ public sealed class StreamPipeline(
 
                 if (++tick % 10 != 0) continue;
 
-                var progress = _encoder?.Progress;
-
-                // Shed audio is a distinct failure from dropped video frames; keep them separate.
                 var shed = _audioPacer.DroppedFrames / AudioPacer.SampleRate;
                 if (shed > _reportedShedSeconds)
                 {
@@ -293,7 +285,7 @@ public sealed class StreamPipeline(
                     StreamStatus.Running,
                     HlsOutput.MeasureBitrateKbps(),
                     settings.Fps,
-                    progress?.DroppedFrames ?? 0,
+                    _encoder?.DroppedFrames ?? 0,
                     _clock.Elapsed.TotalSeconds,
                     null));
             }
@@ -303,7 +295,6 @@ public sealed class StreamPipeline(
         }
         catch (Exception ex)
         {
-            // Detached: an unlogged fault here silently freezes the meter and all statistics.
             hub.Log(LineLevel.Error, $"telemetry stopped: {ex.Message}");
         }
     }
@@ -317,14 +308,6 @@ public sealed class StreamPipeline(
     private static async Task DisposePipeAsync(NamedPipeServerStream? pipe)
     {
         if (pipe is null) return;
-
-        try
-        {
-            if (pipe.IsConnected) pipe.Disconnect();
-        }
-        catch (Exception)
-        {
-        }
 
         try
         {

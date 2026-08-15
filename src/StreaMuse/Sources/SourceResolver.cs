@@ -3,22 +3,18 @@ using StreaMuse.State;
 
 namespace StreaMuse.Sources;
 
-/// <summary>The capture target plus the metadata session that describes it.</summary>
 public sealed record ResolvedSource(
     MusicSource EffectiveSource,
     int CaptureProcessId,
     string ProcessName,
-    bool Active,
     SmtcSession? Metadata,
     string StatusText)
 {
     public bool Detected => CaptureProcessId > 0;
 
-    public static ResolvedSource None(MusicSource source, string reason) =>
-        new(source, 0, "", false, null, reason);
+    public static ResolvedSource None(MusicSource source, string reason) => new(source, 0, "", null, reason);
 }
 
-/// <summary>Whether each source can be selected right now, and why not when it cannot.</summary>
 public sealed record SourceAvailability(MusicSource Source, bool Available, string Reason);
 
 /// <summary>Decides which process to capture. See CLAUDE.md for the selection rules.</summary>
@@ -32,6 +28,11 @@ public sealed class SourceResolver
 
     private static readonly string[] SpotifyProcessNames = ["spotify"];
     private static readonly string[] SpotifyAppIdHints = ["spotify"];
+
+    private const int AutoReleaseAfterQuietPolls = 5;
+
+    private int _autoTarget;
+    private int _autoQuietPolls;
 
     /// <summary>Apple/Spotify are offered only while their desktop app is running.</summary>
     public IReadOnlyList<SourceAvailability> Availability()
@@ -51,118 +52,86 @@ public sealed class SourceResolver
         MusicSource requested,
         int manualProcessId,
         IReadOnlyList<AudioSession> audioSessions,
-        IReadOnlyList<SmtcSession> mediaSessions)
+        IReadOnlyList<SmtcSession> mediaSessions,
+        ProcessTree tree)
     {
-        var parents = ProcessTree.ParentMap();
-
         // Preference is left intact so installing the app later restores it.
-        var available = Availability();
-        var source = available.First(a => a.Source == requested).Available
+        var source = Availability().First(a => a.Source == requested).Available
             ? requested
             : MusicSource.External;
 
         return source == MusicSource.External
-            ? ResolveExternal(manualProcessId, audioSessions, mediaSessions, parents)
-            : ResolveDedicatedApp(source, audioSessions, mediaSessions, parents);
+            ? ResolveExternal(manualProcessId, audioSessions, mediaSessions, tree)
+            : ResolveDedicatedApp(source, audioSessions, mediaSessions, tree);
     }
 
-    private ResolvedSource ResolveDedicatedApp(
+    private static ResolvedSource ResolveDedicatedApp(
         MusicSource source,
         IReadOnlyList<AudioSession> audioSessions,
         IReadOnlyList<SmtcSession> mediaSessions,
-        Dictionary<int, int> parents)
+        ProcessTree tree)
     {
         var processNames = source == MusicSource.Apple ? AppleAudioProcessNames : SpotifyProcessNames;
         var appIdHints = source == MusicSource.Apple ? AppleAppIdHints : SpotifyAppIdHints;
         var label = source == MusicSource.Apple ? "Apple Music" : "Spotify";
 
-        // By name in preference order, not by whichever session enumerates first: the window's own
-        // process renders nothing but would outrank the agent that carries the audio.
         var rendering = processNames
             .Select(name => audioSessions.FirstOrDefault(
                 s => s.ProcessName.Contains(name, StringComparison.OrdinalIgnoreCase)))
             .FirstOrDefault(s => s is not null);
 
-        if (rendering is not null)
-        {
-            var root = ProcessTree.RootOfSameName(rendering.ProcessId, parents);
-            return new ResolvedSource(
-                source, root, rendering.ProcessName, rendering.Active,
-                MatchByProcess(mediaSessions, root) ?? MatchByAppId(mediaSessions, appIdHints),
-                rendering.Active
-                    ? $"Listening to {label} · pid {root}"
-                    : $"{label} attached but silent · pid {root}");
-        }
+        var pid = rendering?.ProcessId ?? FindProcessByNames(processNames);
+        if (pid == 0) return ResolvedSource.None(source, $"{label} is no longer running");
 
-        var idle = FindProcessByNames(processNames);
-        if (idle > 0)
-        {
-            var root = ProcessTree.RootOfSameName(idle, parents);
-            return new ResolvedSource(
-                source, root, AudioSessionScanner.ProcessNameOf(root), false,
-                MatchByProcess(mediaSessions, root) ?? MatchByAppId(mediaSessions, appIdHints),
-                $"{label} open but not playing · pid {root}");
-        }
+        var root = tree.RootOfSameName(pid);
+        var status = rendering is null ? $"{label} open but not playing · pid {root}"
+            : rendering.Active ? $"Listening to {label} · pid {root}"
+            : $"{label} attached but silent · pid {root}";
 
-        return ResolvedSource.None(source, $"{label} is no longer running");
+        return new ResolvedSource(
+            source, root, rendering?.ProcessName ?? tree.NameOf(root) ?? "unknown",
+            MatchByProcess(mediaSessions, root) ?? MatchByAppId(mediaSessions, appIdHints),
+            status);
     }
 
     private ResolvedSource ResolveExternal(
         int manualProcessId,
         IReadOnlyList<AudioSession> audioSessions,
         IReadOnlyList<SmtcSession> mediaSessions,
-        Dictionary<int, int> parents)
+        ProcessTree tree)
     {
-        if (manualProcessId > 0)
+        if (manualProcessId > 0 && tree.NameOf(manualProcessId) is null)
         {
-            var chosen = audioSessions.FirstOrDefault(
-                s => ProcessTree.RootOfSameName(s.ProcessId, parents) == manualProcessId);
-
-            var name = chosen?.ProcessName ?? AudioSessionScanner.ProcessNameOf(manualProcessId);
-            var metadata = MatchByProcess(mediaSessions, manualProcessId);
-            var label = ProcessIdentity.FriendlyName(manualProcessId) is { Length: > 0 } friendly
-                ? friendly
-                : name;
-
-            var what = metadata is null
-                ? " · no track info reported"
-                : $" - {metadata.Title}";
-
-            return new ResolvedSource(
-                MusicSource.External, manualProcessId, label, chosen?.Active ?? false,
-                metadata, $"Capturing {label} · pid {manualProcessId}{what}");
+            return ResolvedSource.None(
+                MusicSource.External, $"Process {manualProcessId} is no longer running - pick another target");
         }
 
-        var root = ElectAutoTarget(audioSessions, mediaSessions, parents);
-
+        var root = manualProcessId > 0 ? manualProcessId : ElectAutoTarget(audioSessions, mediaSessions, tree);
         if (root == 0)
         {
             return ResolvedSource.None(
                 MusicSource.External, "Nothing is playing audio - start playback, then pick a target");
         }
 
-        var elected = audioSessions.First(s => ProcessTree.RootOfSameName(s.ProcessId, parents) == root);
-        var session = MatchByProcess(mediaSessions, root);
-        var autoLabel = ProcessIdentity.FriendlyName(root) is { Length: > 0 } autoFriendly
-            ? autoFriendly
-            : elected.ProcessName;
-
-        var title = session is null ? " · no track info reported" : $" - {session.Title}";
+        var session = audioSessions.FirstOrDefault(s => tree.RootOfSameName(s.ProcessId) == root);
+        var metadata = MatchByProcess(mediaSessions, root);
+        var label = ProcessIdentity.FriendlyName(root, session?.ProcessName ?? tree.NameOf(root) ?? "unknown");
+        var title = metadata is null ? " · no track info reported" : $" - {metadata.Title}";
+        var prefix = manualProcessId > 0 ? "Capturing" : "Auto ·";
 
         return new ResolvedSource(
-            MusicSource.External, root, autoLabel, elected.Active, session,
-            $"Auto · {autoLabel} · pid {root}{title}");
+            MusicSource.External, root, label, metadata, $"{prefix} {label} · pid {root}{title}");
     }
 
     /// <summary>Elects the auto capture target: SMTC-playing first, loudness only as fallback.</summary>
     private int ElectAutoTarget(
         IReadOnlyList<AudioSession> audioSessions,
         IReadOnlyList<SmtcSession> mediaSessions,
-        Dictionary<int, int> parents)
+        ProcessTree tree)
     {
         var candidates = audioSessions
-            .Where(s => !ProcessTree.IsSelfOrDescendant(s.ProcessId, parents))
-            .GroupBy(s => ProcessTree.RootOfSameName(s.ProcessId, parents))
+            .Where(s => !tree.IsSelfOrDescendant(s.ProcessId))
+            .GroupBy(s => tree.RootOfSameName(s.ProcessId))
             .Select(g => new { Root = g.Key, Active = g.Any(s => s.Active), Peak = g.Max(s => s.Peak) })
             .ToList();
 
@@ -217,30 +186,17 @@ public sealed class SourceResolver
         return _autoTarget;
     }
 
-    private const int AutoReleaseAfterQuietPolls = 5;
-
-    private int _autoTarget;
-    private int _autoQuietPolls;
-
-    /// <summary>Live audio sessions offered as capture targets in the UI.</summary>
-    public static IReadOnlyList<CaptureTarget> CaptureTargets(IReadOnlyList<AudioSession> audioSessions)
-    {
-        var parents = ProcessTree.ParentMap();
-
-        return audioSessions
-            .Where(s => !ProcessTree.IsSelfOrDescendant(s.ProcessId, parents))
-            .GroupBy(s => ProcessTree.RootOfSameName(s.ProcessId, parents))
+    public static IReadOnlyList<CaptureTarget> CaptureTargets(
+        IReadOnlyList<AudioSession> audioSessions, ProcessTree tree) =>
+        audioSessions
+            .Where(s => !tree.IsSelfOrDescendant(s.ProcessId))
+            .GroupBy(s => tree.RootOfSameName(s.ProcessId))
             .Select(g => new { Pid = g.Key, Session = g.OrderByDescending(s => s.Active).First() })
             .Select(x => new CaptureTarget(
-                x.Pid,
-                ProcessIdentity.FriendlyName(x.Pid) is { Length: > 0 } friendly
-                    ? friendly
-                    : x.Session.ProcessName,
-                x.Session.Active))
+                x.Pid, ProcessIdentity.FriendlyName(x.Pid, x.Session.ProcessName), x.Session.Active))
             .OrderByDescending(t => t.Active)
             .ThenBy(t => t.Name, StringComparer.OrdinalIgnoreCase)
             .ToList();
-    }
 
     private static SmtcSession? MatchByAppId(IReadOnlyList<SmtcSession> sessions, string[] hints) =>
         sessions.FirstOrDefault(s => hints.Any(

@@ -2,7 +2,6 @@ using StreaMuse.Settings;
 
 namespace StreaMuse.Media;
 
-/// <summary>Manages the segment directory ffmpeg writes into.</summary>
 public static class HlsOutput
 {
     /// <summary>Clears the previous run so a reconnecting client cannot be handed stale segments.</summary>
@@ -29,25 +28,22 @@ public static class HlsOutput
         }
     }
 
-    public static bool PlaylistExists => File.Exists(Path.Combine(Paths.HlsDir, "index.m3u8"));
-
-    /// <summary>Delivered bitrate, measured from segment sizes because HLS reports bitrate=N/A.</summary>
-    public static int MeasureBitrateKbps(int segmentSeconds = 1, int sampleCount = 4)
+    /// <summary>Delivered bitrate over the last few 1 s segments, skipping the newest because
+    /// ffmpeg may still be writing it. Measured from file sizes: HLS reports bitrate=N/A.</summary>
+    public static int MeasureBitrateKbps()
     {
         try
         {
             var segments = new DirectoryInfo(Paths.HlsDir)
                 .EnumerateFiles("seg_*.ts")
                 .OrderByDescending(f => f.Name)
-                .Skip(1)                       // newest may still be being written
-                .Take(sampleCount)
+                .Skip(1)
+                .Take(4)
                 .ToList();
 
             if (segments.Count == 0) return 0;
 
-            var totalBits = segments.Sum(f => f.Length) * 8.0;
-            var seconds = segments.Count * Math.Max(segmentSeconds, 1);
-            return (int)Math.Round(totalBits / seconds / 1000);
+            return (int)Math.Round(segments.Sum(f => f.Length) * 8.0 / segments.Count / 1000);
         }
         catch (Exception)
         {

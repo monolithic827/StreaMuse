@@ -36,19 +36,18 @@ internal static class Program
         Directory.CreateDirectory(Paths.DataDir);
         Directory.CreateDirectory(Paths.HlsDir);
 
+        var controlPort = PortFinder.Pick(7788);
+        var publicPort = PortFinder.Pick(7789);
+
         var settings = AppSettings.Load();
-        var hub = new StateHub { SettingsProvider = () => settings };
+        var hub = new StateHub { Settings = settings };
         var deps = new DependencyManager(hub);
         var artwork = new ArtworkStore();
         var discovery = new DiscoveryService(settings, hub, artwork);
-        var tunnel = new CloudflaredTunnel(settings, hub, deps);
+        var tunnel = new CloudflaredTunnel(settings, hub, deps, publicPort);
         var pipeline = new StreamPipeline(settings, hub, deps, discovery, artwork, tunnel);
 
         discovery.TargetChanged += pipeline.OnTargetChanged;
-
-        var controlPort = PortFinder.Pick(7788);
-        var publicPort = PortFinder.Pick(7789);
-        tunnel.UsePort(publicPort);
 
         var app = BuildWebApp(
             args, settings, hub, deps, artwork, discovery, tunnel, pipeline, controlPort, publicPort);
@@ -69,13 +68,9 @@ internal static class Program
             try
             {
                 await deps.EnsureAllAsync(lifetime.Token);
-                hub.SetDependencies(deps.Snapshot()
-                    .Select(d => new DependencyView(d.Name, d.Present, d.Path, d.Detail))
-                    .ToList());
             }
             catch (Exception ex)
             {
-                // Detached: unlogged, this leaves the Dependencies panel empty with no explanation.
                 hub.Log(LineLevel.Error, $"dependency check failed: {ex.Message}");
             }
         }, lifetime.Token);
@@ -85,7 +80,7 @@ internal static class Program
         using var window = new MainWindow($"http://127.0.0.1:{controlPort}/", hub);
         Application.Run(window);
 
-        Shutdown(lifetime, pipeline, settings, app, hub);
+        Shutdown(lifetime, pipeline, app, hub);
     }
 
     /// <summary>
@@ -96,13 +91,11 @@ internal static class Program
     private static void Shutdown(
         CancellationTokenSource lifetime,
         StreamPipeline pipeline,
-        AppSettings settings,
         WebApplication app,
         StateHub hub)
     {
         Attempt(hub, "cancel background work", lifetime.Cancel);
         Attempt(hub, "stop the stream", () => pipeline.StopAsync().GetAwaiter().GetResult());
-        Attempt(hub, "save settings", settings.Save);
         Attempt(hub, "stop the web host",
             () => app.StopAsync(TimeSpan.FromSeconds(3)).GetAwaiter().GetResult());
     }
@@ -131,7 +124,6 @@ internal static class Program
         int controlPort,
         int publicPort)
     {
-        // Content root is the exe folder, not the shell cwd.
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions
         {
             Args = args,
@@ -141,7 +133,6 @@ internal static class Program
         builder.Logging.ClearProviders();
         builder.WebHost.ConfigureKestrel(options =>
         {
-            // Both loopback; only the public one is handed to cloudflared.
             options.Listen(IPAddress.Loopback, controlPort);
             options.Listen(IPAddress.Loopback, publicPort);
         });
@@ -156,14 +147,13 @@ internal static class Program
 
         var app = builder.Build();
 
-        // wwwroot is compiled into the assembly; there is no web root on disk to serve from.
         app.Environment.WebRootFileProvider =
             new ManifestEmbeddedFileProvider(typeof(Program).Assembly, "wwwroot");
 
         app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(20) });
 
         // Order matters: the public-port filter terminates, so nothing below it is tunnel-reachable.
-        app.MapPublicHls(publicPort, () => settings);
+        app.MapPublicHls(publicPort, settings);
 
         app.MapControlApi(controlPort, publicPort);
 

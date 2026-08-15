@@ -11,8 +11,6 @@ public static class ProcessIdentity
 {
     private sealed record Identity(string Name, string Product, string Description);
 
-    // Keyed by process instance, not pid: Windows recycles pids, and a stale entry would bind one
-    // app's SMTC metadata to whatever inherited its pid.
     private static readonly ConcurrentDictionary<(int Pid, long Started), Identity> Cache = new();
 
     /// <summary>Shortest token length worth comparing; below this, matches are coincidence.</summary>
@@ -47,11 +45,11 @@ public static class ProcessIdentity
         return false;
     }
 
-    /// <summary>A human-readable name for the process, preferring its product name.</summary>
-    public static string FriendlyName(int processId)
+    public static string FriendlyName(int processId, string fallback)
     {
         var identity = Describe(processId);
-        return !string.IsNullOrWhiteSpace(identity.Product) ? identity.Product : identity.Name;
+        if (!string.IsNullOrWhiteSpace(identity.Product)) return identity.Product;
+        return string.IsNullOrWhiteSpace(identity.Name) ? fallback : identity.Name;
     }
 
     private static Identity Describe(int processId)
@@ -63,7 +61,6 @@ public static class ProcessIdentity
         }
         catch (Exception)
         {
-            // Not cached: a process we cannot open now may be readable on the next poll.
             return new Identity("", "", "");
         }
     }

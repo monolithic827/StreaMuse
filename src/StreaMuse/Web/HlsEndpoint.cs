@@ -7,11 +7,10 @@ namespace StreaMuse.Web;
 /// Everything else on this port 404s. Never widen this. See CLAUDE.md.</summary>
 public static class HlsEndpoint
 {
-    /// <summary>The playlist URL for a stream key. Rebuilt whenever the key changes.</summary>
     public static string LocalUrl(int publicPort, string streamKey) =>
         $"http://127.0.0.1:{publicPort}/live/{streamKey}/index.m3u8";
 
-    public static void MapPublicHls(this WebApplication app, int publicPort, Func<AppSettings> settings)
+    public static void MapPublicHls(this WebApplication app, int publicPort, AppSettings settings)
     {
         app.Use(async (ctx, next) =>
         {
@@ -21,7 +20,7 @@ public static class HlsEndpoint
                 return;
             }
 
-            var served = await TryServeAsync(ctx, settings());
+            var served = await TryServeAsync(ctx, settings);
             if (!served)
             {
                 ctx.Response.StatusCode = StatusCodes.Status404NotFound;
@@ -40,8 +39,6 @@ public static class HlsEndpoint
 
         var name = path[expectedPrefix.Length..];
 
-        // Only flat, well-known filenames - no traversal, no subdirectories. IsPathRooted also
-        // rejects "C:seg.ts": Path.Combine drops HlsDir for a drive-relative name.
         if (name.Length == 0 || name.Contains('/') || name.Contains('\\') || name.Contains("..") ||
             Path.IsPathRooted(name))
         {

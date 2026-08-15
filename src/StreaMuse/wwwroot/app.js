@@ -1,26 +1,15 @@
 'use strict';
 
-// Pure view over server state: the backend pushes snapshots, the panel only posts intents back.
-// Bindings are declarative: every [data-bind="x"] element receives view.x.
-
-const HOST = { post: post, get: get };
 const METER_BARS = 34;
 const SOURCE_LABELS = { apple: 'Apple Music', spotify: 'Spotify', external: 'External' };
 
 let state = null;
 let settings = null;
-let draft = null;
 let copiedUntil = 0;
 let socket = null;
 let reportedDetailsHeight = -1;
 
 // ── transport ───────────────────────────────────────────────────────────────
-
-async function get(path) {
-  const response = await fetch(path);
-  if (!response.ok) throw new Error(path + ' → ' + response.status);
-  return response.json();
-}
 
 async function post(path, body) {
   const response = await fetch(path, {
@@ -44,7 +33,6 @@ function connect() {
     if (message.type === 'state') {
       state = message;
       settings = message.settings;
-      if (!draft) draft = JSON.parse(JSON.stringify(settings));
       render();
     } else if (message.type === 'meter') {
       renderMeter(message.bars, message.peakDb, message.signal);
@@ -149,7 +137,6 @@ function render() {
   renderSourceOptions(view);
   renderTargets();
 
-  // The capture-target picker only applies to the External source.
   for (const element of document.querySelectorAll('[data-bind-show]')) {
     element.hidden = !view[element.dataset.bindShow];
   }
@@ -176,8 +163,6 @@ function render() {
   reportDetailsHeight();
 }
 
-// Only the layout knows how tall the pane is, and the host needs it to raise the window's minimum
-// height by the same amount while it is open.
 function reportDetailsHeight() {
   const pane = document.getElementById('log-panel');
   const open = !document.body.classList.contains('log-closed');
@@ -188,8 +173,6 @@ function reportDetailsHeight() {
   toHost('detailsHeight', { height: height });
 }
 
-// `style` may be a declaration string or a property object. Passing a string to Object.assign
-// throws and silently aborts the rest of the bind loop.
 function apply(element, value) {
   if (value === undefined || value === null) return;
 
@@ -231,10 +214,9 @@ function renderCover() {
   const has = version > 0;
 
   for (const img of document.querySelectorAll('[data-bind="cover"]')) {
-    const wanted = has ? '/api/art?v=' + version : '';
     if (img.dataset.version !== String(version)) {
       img.dataset.version = String(version);
-      if (has) img.src = wanted;
+      if (has) img.src = '/api/art?v=' + version;
     }
     img.hidden = !has;
   }
@@ -256,7 +238,6 @@ function renderMeter(bars, peakDb, signal) {
     }
   }
 
-  // null when there is no signal: JSON cannot carry negative infinity.
   const peakText = (peakDb === null || peakDb === undefined || !isFinite(peakDb))
     ? 'peak −∞ dB'
     : 'peak ' + peakDb.toFixed(1) + ' dB';
@@ -330,7 +311,7 @@ function renderDeps() {
 
     const path = document.createElement('span');
     path.className = 'path';
-    path.textContent = dep.present ? dep.path : (dep.detail || 'missing');
+    path.textContent = dep.present ? dep.path : 'not found';
     path.title = path.textContent;
 
     row.append(dot, name, path);
@@ -357,30 +338,29 @@ function clock(seconds) {
 // ── settings dialog ─────────────────────────────────────────────────────────
 
 function openSettings() {
-  draft = JSON.parse(JSON.stringify(settings));
   fillSettings();
   document.getElementById('settings').hidden = false;
 }
 
 function fillSettings() {
-  document.getElementById('set-key').value = draft.streamKey;
-  document.getElementById('set-vbr').value = draft.videoBitrateKbps;
-  document.getElementById('set-abr').value = draft.audioBitrateKbps;
-  document.getElementById('set-fps').value = draft.fps;
-  document.getElementById('set-overlay').checked = draft.textOverlay;
-  document.getElementById('set-token').value = draft.namedTunnelToken;
-  document.getElementById('set-host').value = draft.namedTunnelHostname;
-  document.getElementById('set-autotunnel').checked = draft.autoTunnel;
+  document.getElementById('set-key').value = settings.streamKey;
+  document.getElementById('set-vbr').value = settings.videoBitrateKbps;
+  document.getElementById('set-abr').value = settings.audioBitrateKbps;
+  document.getElementById('set-fps').value = settings.fps;
+  document.getElementById('set-overlay').checked = settings.textOverlay;
+  document.getElementById('set-token').value = settings.namedTunnelToken;
+  document.getElementById('set-host').value = settings.namedTunnelHostname;
+  document.getElementById('set-autotunnel').checked = settings.autoTunnel;
 
-  const resolution = draft.width + 'x' + draft.height;
+  const resolution = settings.width + 'x' + settings.height;
   for (const radio of document.querySelectorAll('input[name="res"]')) {
     radio.checked = radio.value === resolution;
   }
   for (const radio of document.querySelectorAll('input[name="tmode"]')) {
-    radio.checked = radio.value === draft.tunnelMode;
+    radio.checked = radio.value === settings.tunnelMode;
   }
 
-  document.getElementById('named-fields').hidden = draft.tunnelMode !== 'Named';
+  document.getElementById('named-fields').hidden = settings.tunnelMode !== 'Named';
   syncSettingLabels();
 }
 
@@ -394,7 +374,7 @@ function readSettings() {
   const resolution = (document.querySelector('input[name="res"]:checked') || {}).value || '1280x720';
   const [width, height] = resolution.split('x').map(Number);
 
-  return Object.assign({}, draft, {
+  return {
     streamKey: document.getElementById('set-key').value.trim(),
     width: width,
     height: height,
@@ -406,11 +386,11 @@ function readSettings() {
     namedTunnelToken: document.getElementById('set-token').value.trim(),
     namedTunnelHostname: document.getElementById('set-host').value.trim(),
     autoTunnel: document.getElementById('set-autotunnel').checked
-  });
+  };
 }
 
-// Rides along with the state snapshot, so it never goes stale. The DOM is only rebuilt when the
-// options change, which keeps an open dropdown from closing under the user.
+// The DOM is only rebuilt when the options change, which keeps an open dropdown from closing
+// under the user.
 function renderTargets() {
   const select = document.getElementById('target-select');
   const targets = state.source.targets || [];
@@ -451,15 +431,13 @@ function toHost(command, extra) {
 }
 
 async function saveSettings(patch) {
-  const next = Object.assign({}, settings, patch);
-  await HOST.post('/api/settings', next);
+  await post('/api/settings', Object.assign({}, settings, patch));
 }
 
 document.getElementById('tb-min').onclick = () => toHost('minimize');
 document.getElementById('tb-max').onclick = () => toHost('maximize');
 document.getElementById('tb-close').onclick = () => toHost('close');
 
-// Dragging the bar itself (but not its buttons) moves the window; double-clicking it maximizes.
 document.getElementById('titlebar').addEventListener('mousedown', event => {
   if (event.button !== 0 || event.target.closest('.titlebar-btn')) return;
   toHost(event.detail === 2 ? 'maximize' : 'drag');
@@ -475,7 +453,7 @@ document.getElementById('btn-cancel').onclick = () => { document.getElementById(
 
 document.getElementById('btn-save').onclick = async () => {
   try {
-    await HOST.post('/api/settings', readSettings());
+    await saveSettings(readSettings());
     document.getElementById('settings').hidden = true;
   } catch (error) {
     alert('Could not save settings: ' + error.message);
@@ -483,7 +461,7 @@ document.getElementById('btn-save').onclick = async () => {
 };
 
 document.getElementById('btn-deps').onclick = async () => {
-  try { await HOST.post('/api/deps/refresh'); } catch { /* logged server-side */ }
+  try { await post('/api/deps/refresh'); } catch { /* logged server-side */ }
 };
 
 for (const id of ['set-vbr', 'set-abr', 'set-fps']) {
@@ -510,7 +488,7 @@ for (const button of document.querySelectorAll('[data-main-button]')) {
   button.addEventListener('click', async () => {
     const running = state.encoder.status === 'running' || state.encoder.status === 'starting';
     try {
-      await HOST.post(running ? '/api/stream/stop' : '/api/stream/start');
+      await post(running ? '/api/stream/stop' : '/api/stream/start');
     } catch (error) {
       alert(error.message);
     }
@@ -520,7 +498,7 @@ for (const button of document.querySelectorAll('[data-main-button]')) {
 document.querySelector('[data-tunnel-button]').addEventListener('click', async () => {
   const up = state.tunnel.status === 'up' || state.tunnel.status === 'starting';
   try {
-    await HOST.post(up ? '/api/tunnel/stop' : '/api/tunnel/start');
+    await post(up ? '/api/tunnel/stop' : '/api/tunnel/start');
   } catch (error) {
     alert(error.message);
   }

@@ -13,7 +13,8 @@ public sealed class CoverFrameRenderer(AppSettings settings, ArtworkStore artwor
 
     private SKBitmap? _decoded;
     private long _decodedVersion = -1;
-    private SKColor _background = new(0x1D, 0x1F, 0x20);
+    private static readonly SKColor DefaultBackground = new(0x1D, 0x1F, 0x20);
+    private SKColor _background = DefaultBackground;
 
     private byte[]? _lastFrame;
     private string _lastSignature = "";
@@ -59,7 +60,6 @@ public sealed class CoverFrameRenderer(AppSettings settings, ArtworkStore artwor
         if (art is not null)
         {
             DrawBackdrop(canvas, art, width, height);
-            using var paint = new SKPaint { IsAntialias = true };
             canvas.DrawBitmap(art, Fit(art.Width, art.Height, artBox), new SKSamplingOptions(SKFilterMode.Linear));
         }
         else
@@ -178,7 +178,7 @@ public sealed class CoverFrameRenderer(AppSettings settings, ArtworkStore artwor
     private static SKColor DominantColor(SKBitmap bitmap)
     {
         using var small = bitmap.Resize(new SKImageInfo(16, 16), new SKSamplingOptions(SKFilterMode.Linear));
-        if (small is null) return new SKColor(0x1D, 0x1F, 0x20);
+        if (small is null) return DefaultBackground;
 
         long r = 0, g = 0, b = 0;
         var count = 0;
@@ -193,7 +193,7 @@ public sealed class CoverFrameRenderer(AppSettings settings, ArtworkStore artwor
             count++;
         }
 
-        if (count == 0) return new SKColor(0x1D, 0x1F, 0x20);
+        if (count == 0) return DefaultBackground;
 
         return new SKColor(
             (byte)(r / count * 0.35),
@@ -209,7 +209,6 @@ public sealed class CoverFrameRenderer(AppSettings settings, ArtworkStore artwor
         return new SKRect(leftEdge, top, leftEdge + side, top + side);
     }
 
-    /// <summary>Aspect-preserving cover fit inside the square art box.</summary>
     private static SKRect Fit(int sourceWidth, int sourceHeight, SKRect box)
     {
         var scale = Math.Min(box.Width / sourceWidth, box.Height / sourceHeight);

@@ -31,18 +31,14 @@ public sealed class AppSettings
     public int VideoBitrateKbps { get; set; } = 400;
     public int AudioBitrateKbps { get; set; } = 320;
 
-    /// <summary>Draw title/artist/progress over the artwork rather than artwork alone.</summary>
     public bool TextOverlay { get; set; } = true;
 
     public TunnelMode TunnelMode { get; set; } = TunnelMode.Quick;
 
-    /// <summary>Cloudflare tunnel token, used only when <see cref="TunnelMode"/> is Named.</summary>
     public string NamedTunnelToken { get; set; } = "";
 
-    /// <summary>Hostname the named tunnel is routed to, for display and URL construction.</summary>
     public string NamedTunnelHostname { get; set; } = "";
 
-    /// <summary>Start the tunnel automatically whenever the stream starts.</summary>
     public bool AutoTunnel { get; set; } = true;
 
     /// <summary>Explicit PID override; 0 means "let SourceResolver decide".</summary>
@@ -104,9 +100,6 @@ public sealed class AppSettings
         var cleaned = new string((key ?? "").Where(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_').ToArray());
         return cleaned.Length == 0 ? "live" : cleaned[..Math.Min(cleaned.Length, 64)];
     }
-
-    public AppSettings Clone() =>
-        JsonSerializer.Deserialize<AppSettings>(JsonSerializer.Serialize(this, JsonOptions), JsonOptions)!;
 }
 
 /// <summary>Well-known directories. Config is roaming, binaries and HLS output are machine-local.</summary>

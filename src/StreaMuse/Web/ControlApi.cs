@@ -1,5 +1,4 @@
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using StreaMuse.Deps;
 using StreaMuse.Settings;
 using StreaMuse.Sources;
@@ -10,12 +9,6 @@ namespace StreaMuse.Web;
 /// <summary>Loopback-only control surface. Never exposed through the tunnel.</summary>
 public static class ControlApi
 {
-    private static readonly JsonSerializerOptions Json = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        Converters = { new JsonStringEnumConverter() }
-    };
-
     public static void MapControlApi(this WebApplication app, int controlPort, int publicPort)
     {
         var hub = app.Services.GetRequiredService<StateHub>();
@@ -41,9 +34,7 @@ public static class ControlApi
         app.UseDefaultFiles();
         app.UseStaticFiles();
 
-        app.MapGet("/api/state", () => Results.Json(hub.Snapshot(), Json));
-
-        app.MapGet("/api/settings", () => Results.Json(settings, Json));
+        app.MapGet("/api/state", () => Results.Json(hub.Snapshot(), StateHub.Json));
 
         // Versioned so the browser can cache each image forever.
         app.MapGet("/api/art", (HttpContext ctx) =>
@@ -57,7 +48,7 @@ public static class ControlApi
 
         app.MapPost("/api/settings", async (HttpContext ctx) =>
         {
-            var incoming = await JsonSerializer.DeserializeAsync<AppSettings>(ctx.Request.Body, Json);
+            var incoming = await JsonSerializer.DeserializeAsync<AppSettings>(ctx.Request.Body, StateHub.Json);
             if (incoming is null) return Results.BadRequest();
 
             Apply(settings, incoming.Normalized());
@@ -67,7 +58,7 @@ public static class ControlApi
             // built at startup 404s after a key change. This also rebroadcasts the saved settings.
             hub.SetLocalUrl(HlsEndpoint.LocalUrl(publicPort, settings.StreamKey));
             hub.Log(LineLevel.Info, "settings saved - encoder changes apply on next start");
-            return Results.Json(settings, Json);
+            return Results.Json(settings, StateHub.Json);
         });
 
         app.MapPost("/api/stream/start", async () => await pipeline.StartAsync()
@@ -93,9 +84,6 @@ public static class ControlApi
         app.MapPost("/api/deps/refresh", async () =>
         {
             await deps.EnsureAllAsync();
-            hub.SetDependencies(deps.Snapshot()
-                .Select(d => new DependencyView(d.Name, d.Present, d.Path, d.Detail))
-                .ToList());
             return Results.Ok();
         });
 

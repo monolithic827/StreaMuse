@@ -42,15 +42,14 @@ public static class CaptureSelfTest
         Console.WriteLine($"  pid    : {resolved.CaptureProcessId} ({resolved.ProcessName})");
         Console.WriteLine();
 
-        var pacer = new AudioPacer(hub);
+        var pacer = new AudioPacer();
         var meter = new LevelMeter();
         using var capture = new ProcessLoopbackCapture(hub);
 
         capture.SamplesAvailable += samples =>
         {
-            var array = samples.ToArray();
-            meter.Add(array);
-            pacer.Push(array);
+            meter.Add(samples);
+            pacer.Push(samples);
         };
 
         if (!await capture.StartAsync(resolved.CaptureProcessId))
@@ -62,9 +61,7 @@ public static class CaptureSelfTest
         var output = Path.Combine(Paths.DataDir, "capture-test.wav");
         Console.WriteLine($"Recording {seconds}s to {output} …");
 
-        var wall = Stopwatch.StartNew();
-        var clock = new Media.StreamClock();
-        clock.Restart();
+        var clock = Stopwatch.StartNew();
 
         await using (var wav = new WavWriter(output, AudioPacer.SampleRate, AudioPacer.Channels))
         {
@@ -72,7 +69,6 @@ public static class CaptureSelfTest
             await pacer.RunAsync(wav.Stream, clock, recordCts.Token);
         }
 
-        wall.Stop();
         clock.Stop();
         capture.Stop();
         await cts.CancelAsync();
@@ -91,9 +87,9 @@ public static class CaptureSelfTest
 
         Console.WriteLine();
         Console.WriteLine("=== result ===");
-        Console.WriteLine($"  wall clock     : {wall.Elapsed.TotalSeconds:F2}s");
+        Console.WriteLine($"  wall clock     : {clock.Elapsed.TotalSeconds:F2}s");
         Console.WriteLine($"  audio written  : {writtenSeconds:F2}s");
-        Console.WriteLine($"  drift          : {(writtenSeconds - wall.Elapsed.TotalSeconds) * 1000:F0} ms");
+        Console.WriteLine($"  drift          : {(writtenSeconds - clock.Elapsed.TotalSeconds) * 1000:F0} ms");
         Console.WriteLine($"  silence filled : {silentSeconds:F2}s " +
                           $"({silentSeconds / Math.Max(writtenSeconds, 0.01) * 100:F1}%)");
         Console.WriteLine($"  dropped        : {pacer.DroppedFrames / (double)AudioPacer.SampleRate:F2}s");

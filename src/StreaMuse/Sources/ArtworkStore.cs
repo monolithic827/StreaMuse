@@ -29,9 +29,6 @@ public sealed class ArtworkStore
         }
     }
 
-    // Derived from the bytes, never a counter: /api/art is served immutable into a WebView2 cache
-    // that outlives the process, so a counter restarting at 1 would hand the panel the previous
-    // run's image. Forced positive and non-zero - the panel reads 0 as "no artwork".
     private static long Fingerprint(byte[] bytes) =>
         (BitConverter.ToInt64(SHA256.HashData(bytes)) & long.MaxValue) | 1;
 }

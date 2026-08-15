@@ -19,12 +19,10 @@ public sealed record NowPlaying(
     bool Playing,
     double PositionSeconds,
     double DurationSeconds,
-    // Bumped whenever new artwork bytes arrive, so the UI knows to re-fetch /api/art.
     long ArtworkVersion);
 
 public sealed record SourceOption(string Source, bool Available, string Reason);
 
-/// <summary>A process the user can attach capture to.</summary>
 public sealed record CaptureTarget(int Pid, string Name, bool Active);
 
 public sealed record SourceState(
@@ -35,7 +33,6 @@ public sealed record SourceState(
     int ProcessId,
     string StatusText,
     IReadOnlyList<SourceOption> Options,
-    // Ships with the snapshot rather than a separate poll, so the picker cannot go stale.
     IReadOnlyList<CaptureTarget> Targets);
 
 public sealed record EncoderState(
@@ -51,7 +48,10 @@ public sealed record TunnelState(
     string? PublicUrl,
     string? Error);
 
-public sealed record DependencyView(string Name, bool Present, string? Path, string? Detail);
+public sealed record DependencyView(string Name, string? Path)
+{
+    public bool Present => Path is not null;
+}
 
 /// <summary>Immutable snapshot sent to the UI. Level meter and log lines ship as separate messages.</summary>
 public sealed record StateSnapshot(
