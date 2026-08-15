@@ -14,8 +14,11 @@ public sealed class DiscoveryService(
     private readonly SourceResolver _resolver = new();
     private readonly SmtcMetadataService _smtc = new(hub);
 
+    /// <summary>How long a track's artwork is chased for, in polls, before giving up on it.</summary>
+    private const int ArtworkPolls = 8;
+
     private string _lastIdentity = "";
-    private bool _retryArtwork;
+    private int _artworkPolls;
     private ResolvedSource _current = ResolvedSource.None(MusicSource.External, "Starting up…");
 
     /// <summary>Latest resolution, read by the capture pipeline when it (re)starts.</summary>
@@ -52,22 +55,29 @@ public sealed class DiscoveryService(
         var resolved = _resolver.Resolve(settings.Source, settings.ManualProcessId, audioSessions, lightweight);
 
         var identity = Identity(resolved.Metadata);
-        if (identity != _lastIdentity || _retryArtwork)
+        if (identity != _lastIdentity)
         {
-            var retrying = _retryArtwork;
             _lastIdentity = identity;
+            _artworkPolls = ArtworkPolls;
+        }
+
+        if (_artworkPolls > 0)
+        {
+            var first = _artworkPolls == ArtworkPolls;
 
             var withArtwork = await _smtc.ReadAllAsync(includeArtwork: true);
             resolved = _resolver.Resolve(settings.Source, settings.ManualProcessId, audioSessions, withArtwork);
+            var found = resolved.Metadata?.Artwork;
 
-            // A thumbnail read often fails in the moment right after a track change. Hold the old
-            // cover for one tick and try once more, rather than showing none for the whole track.
-            _retryArtwork = !retrying && resolved.Metadata?.ArtworkFailed == true;
-
-            if (!_retryArtwork && artwork.Set(resolved.Metadata?.Artwork) && resolved.Metadata is not null)
+            // The cover still on screen belongs to the track that just ended, so it goes as soon as
+            // the first read comes back without one; the polls after that are the app still fetching.
+            if ((found is not null || first) &&
+                artwork.Set(found) && found is not null && resolved.Metadata is not null)
             {
                 hub.Log(LineLevel.Info, $"now playing - {resolved.Metadata.Title} · {resolved.Metadata.Artist}");
             }
+
+            _artworkPolls = found is null ? _artworkPolls - 1 : 0;
         }
 
         var previous = _current;

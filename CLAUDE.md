@@ -124,8 +124,10 @@ is not enough on Windows: `Path.Combine` discards its first argument for a drive
 - Process loopback taps the session *after* the audio engine has applied its per-app volume, so the
   Windows mixer's slider and mute reach the stream. Nothing on our side can undo it: a mute delivers
   zeros. Playing silently locally means routing the app to another output device, not muting it.
-- `AudioSessionScanner` enumerates only the *default* render endpoint, so an app routed to a second
-  device (a virtual cable, say) is invisible to it and drops out of election and the target list.
+- `AudioSessionScanner` enumerates *every* active render endpoint, not just the default one, or an
+  app routed to a second device (a virtual cable, say) drops out of election, the target list and
+  the status text. Capture is endpoint-independent, so this is discovery only; one process can
+  appear once per device it renders to, which is why callers group by root pid.
 
 **Pacing (the reason the stream never stalls)**
 - Process loopback delivers *nothing* while the source is paused. `AudioPacer` therefore writes
@@ -161,6 +163,11 @@ is not enough on Windows: `Path.Combine` discards its first argument for a drive
 - Apple Music and Spotify mean the *desktop app* and are only offered when that process exists;
   everything else is `External`. Nothing in Windows reports which site a browser tab is playing, so
   never label a captured browser as a specific service.
+- Apple Music plays through `AMPLibraryAgent.exe`, not the window's `AppleMusic.exe`. The agent is
+  started by svchost, so it is not in the app's process tree either and `IncludeTargetProcessTree`
+  never reaches it: capturing the process behind the window records pure silence. Availability still
+  keys on `AppleMusic.exe` - the agent outlives the window - but the capture target must be the
+  agent, which is why `AppleAudioProcessNames` is a separate list and lists it first.
 - Auto target election prefers whichever candidate SMTC reports as *playing*. Do not elect on
   `MasterPeakValue`: it is an instantaneous sample, so every gap in the audio flips the target,
   which blinks the metadata and reattaches capture mid-stream. Loudness is a fallback only, and the
@@ -177,6 +184,16 @@ is not enough on Windows: `Path.Combine` discards its first argument for a drive
   blank that process's name for the rest of the run.
 - `TimelineProperties.Position` is not a live clock - apps push it only on play/pause/seek, so it
   must be extrapolated from `LastUpdatedTime`.
+- Every SMTC call runs on `MediaThread`. The session proxies are bound to the thread that created
+  their manager, and an `await` inside a read - a thumbnail especially - resumes on a different pool
+  thread, after which every remaining session throws `RPC_E_WRONG_THREAD` and is silently dropped
+  for that poll. Retrying does not help: the retry runs on the same wrong thread. Do not move this
+  work back onto the pool, and do not `await` SMTC anywhere else.
+- Artwork does not arrive with the title. A track the app has never played is still being fetched,
+  and until it lands the session reports *no thumbnail at all* rather than one that fails to read.
+  It is chased for `ArtworkPolls` polls after a track change and taken as soon as it appears; the
+  previous cover is dropped on the first empty read, or the video pairs the new title with the old
+  album for as long as the fetch takes.
 - `ArtworkStore.Version` is a hash of the bytes, not a counter, because it is also the cache key in
   `/api/art?v=`. That response is `immutable` for a year and WebView2's cache outlives the process,
   so a counter restarting at 1 each run served the panel the *previous* run's covers - while the
@@ -219,9 +236,10 @@ because passing a string to `Object.assign` throws and silently aborts the remai
 
 ## Not yet verified
 
-The Apple Music and Spotify **desktop app** branches have never run - neither app is installed on
-the development machine, so those paths are written but unexercised. Everything else in the pipeline
-has been verified end to end against real playback.
+The Spotify **desktop app** branch has never run - it is not installed on the development machine, so
+that path is written but unexercised, as is iTunes, which the Apple branch also matches. Apple Music
+itself has been verified end to end against real playback on the Store build
+(`AppleInc.AppleMusicWin`). Everything else in the pipeline has been verified the same way.
 
 Window sizing has only been exercised on the development machine: one 2560x1440 monitor at 125% with
 a bottom taskbar. The DPI and multi-monitor paths (`OnDpiChanged`, `Screen.FromControl`, a taskbar on

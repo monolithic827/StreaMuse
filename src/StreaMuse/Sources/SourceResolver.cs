@@ -27,6 +27,9 @@ public sealed class SourceResolver
     private static readonly string[] AppleProcessNames = ["applemusic", "itunes"];
     private static readonly string[] AppleAppIdHints = ["applemusic", "appleinc.applemusic", "itunes"];
 
+    /// <summary>Apple Music renders through AMPLibraryAgent, so it is tried first. See CLAUDE.md.</summary>
+    private static readonly string[] AppleAudioProcessNames = ["amplibraryagent", "applemusic", "itunes"];
+
     private static readonly string[] SpotifyProcessNames = ["spotify"];
     private static readonly string[] SpotifyAppIdHints = ["spotify"];
 
@@ -69,11 +72,17 @@ public sealed class SourceResolver
         IReadOnlyList<SmtcSession> mediaSessions,
         Dictionary<int, int> parents)
     {
-        var processNames = source == MusicSource.Apple ? AppleProcessNames : SpotifyProcessNames;
+        var processNames = source == MusicSource.Apple ? AppleAudioProcessNames : SpotifyProcessNames;
         var appIdHints = source == MusicSource.Apple ? AppleAppIdHints : SpotifyAppIdHints;
         var label = source == MusicSource.Apple ? "Apple Music" : "Spotify";
 
-        var rendering = audioSessions.FirstOrDefault(s => MatchesAny(s.ProcessName, processNames));
+        // By name in preference order, not by whichever session enumerates first: the window's own
+        // process renders nothing but would outrank the agent that carries the audio.
+        var rendering = processNames
+            .Select(name => audioSessions.FirstOrDefault(
+                s => s.ProcessName.Contains(name, StringComparison.OrdinalIgnoreCase)))
+            .FirstOrDefault(s => s is not null);
+
         if (rendering is not null)
         {
             var root = ProcessTree.RootOfSameName(rendering.ProcessId, parents);
@@ -245,9 +254,6 @@ public sealed class SourceResolver
             .OrderByDescending(s => !string.IsNullOrWhiteSpace(s.Title))
             .ThenByDescending(s => s.Playing)
             .FirstOrDefault();
-
-    private static bool MatchesAny(string processName, string[] candidates) =>
-        candidates.Any(c => processName.Contains(c, StringComparison.OrdinalIgnoreCase));
 
     private static int FindProcessByNames(string[] names)
     {

@@ -22,9 +22,23 @@ public sealed class AudioSessionScanner
         try
         {
             using var enumerator = new MMDeviceEnumerator();
-            if (!enumerator.HasDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia)) return results;
 
-            using var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+            foreach (var device in enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
+            {
+                using (device) AddSessions(device, results);
+            }
+        }
+        catch (Exception)
+        {
+        }
+
+        return results;
+    }
+
+    private static void AddSessions(MMDevice device, List<AudioSession> results)
+    {
+        try
+        {
             var manager = device.AudioSessionManager;
             manager.RefreshSessions();
 
@@ -54,8 +68,6 @@ public sealed class AudioSessionScanner
         catch (Exception)
         {
         }
-
-        return results;
     }
 
     public static string ProcessNameOf(int pid)

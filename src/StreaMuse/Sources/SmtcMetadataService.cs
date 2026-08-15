@@ -14,15 +14,15 @@ public sealed record SmtcSession(
     bool Playing,
     double PositionSeconds,
     double DurationSeconds,
-    byte[]? Artwork,
-    bool ArtworkFailed);
+    byte[]? Artwork);
 
 /// <summary>Now-playing metadata from the Windows media transport controls.</summary>
 public sealed class SmtcMetadataService(StateHub hub)
 {
+    private readonly MediaThread _thread = new();
     private GlobalSystemMediaTransportControlsSessionManager? _manager;
 
-    public async Task<bool> InitializeAsync()
+    public Task<bool> InitializeAsync() => _thread.RunAsync(async () =>
     {
         try
         {
@@ -34,30 +34,30 @@ public sealed class SmtcMetadataService(StateHub hub)
             hub.Log(LineLevel.Error, $"media transport controls unavailable: {ex.Message}");
             return false;
         }
-    }
+    });
 
     /// <summary>All sessions currently registered with the system, newest artwork included.</summary>
-    public async Task<IReadOnlyList<SmtcSession>> ReadAllAsync(bool includeArtwork)
-    {
-        if (_manager is null) return [];
-
-        var results = new List<SmtcSession>();
-
-        try
+    public Task<IReadOnlyList<SmtcSession>> ReadAllAsync(bool includeArtwork) =>
+        _thread.RunAsync<IReadOnlyList<SmtcSession>>(async () =>
         {
-            foreach (var session in _manager.GetSessions())
+            var results = new List<SmtcSession>();
+            if (_manager is null) return results;
+
+            try
             {
-                var read = await ReadOneAsync(session, includeArtwork);
-                if (read is not null) results.Add(read);
+                foreach (var session in _manager.GetSessions())
+                {
+                    var read = await ReadOneAsync(session, includeArtwork);
+                    if (read is not null) results.Add(read);
+                }
             }
-        }
-        catch (Exception ex)
-        {
-            hub.Log(LineLevel.Warn, $"could not read media sessions: {ex.Message}");
-        }
+            catch (Exception ex)
+            {
+                hub.Log(LineLevel.Warn, $"could not read media sessions: {ex.Message}");
+            }
 
-        return results;
-    }
+            return results;
+        });
 
     private static async Task<SmtcSession?> ReadOneAsync(
         GlobalSystemMediaTransportControlsSession session, bool includeArtwork)
@@ -69,10 +69,9 @@ public sealed class SmtcMetadataService(StateHub hub)
             var timeline = session.GetTimelineProperties();
 
             byte[]? artwork = null;
-            var wanted = includeArtwork && props?.Thumbnail is not null;
-            if (wanted)
+            if (includeArtwork && props?.Thumbnail is not null)
             {
-                artwork = await ReadThumbnailAsync(props!.Thumbnail);
+                artwork = await ReadThumbnailAsync(props.Thumbnail);
             }
 
             var playing = playback?.PlaybackStatus ==
@@ -89,8 +88,7 @@ public sealed class SmtcMetadataService(StateHub hub)
                 playing,
                 PositionSeconds(timeline, playing, playback?.PlaybackRate),
                 (timeline.EndTime - timeline.StartTime).TotalSeconds,
-                artwork,
-                wanted && artwork is null);
+                artwork);
         }
         catch (Exception)
         {
