@@ -88,6 +88,11 @@ is not enough on Windows: `Path.Combine` discards its first argument for a drive
   the runtime's 4.0.0.0 shim. `RemoveWebView2WpfReference` drops the reference; it has to be a
   target, because the package adds it from its own `.targets` after the project body. Don't fix it
   with `UseWpf`.
+- `InvariantGlobalization` must stay off. WinForms handles `WM_INPUTLANGCHANGE` by resolving the new
+  keyboard layout's LCID through `CultureInfo.GetCultureInfo`, which throws in invariant mode for
+  anything but the invariant culture, so switching to a Hebrew layout while the window had focus
+  killed the message loop with an unhandled exception. .NET uses Windows' own ICU, so nothing extra
+  ships for it.
 
 **Window chrome**
 - The form is resizable only because `CreateParams` adds `WS_THICKFRAME` back to a `FormBorderStyle.

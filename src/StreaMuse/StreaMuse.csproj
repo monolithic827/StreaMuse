@@ -15,7 +15,6 @@
     <SelfContained>false</SelfContained>
     <!-- NAudio process loopback ships only in 3.0 preview; see CLAUDE.md before changing. -->
     <NoWarn>$(NoWarn);NU5104</NoWarn>
-    <InvariantGlobalization>true</InvariantGlobalization>
     <StaticWebAssetsEnabled>false</StaticWebAssetsEnabled>
     <GenerateEmbeddedFilesManifest>true</GenerateEmbeddedFilesManifest>
   </PropertyGroup>
