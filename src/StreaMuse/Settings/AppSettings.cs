@@ -17,6 +17,14 @@ public enum TunnelMode
     Named
 }
 
+/// <summary>Auto follows the Windows app theme.</summary>
+public enum AppTheme
+{
+    Auto,
+    Dark,
+    Light
+}
+
 /// <summary>User-facing configuration. Encoder fields are read only when the stream starts.</summary>
 public sealed class AppSettings
 {
@@ -45,6 +53,8 @@ public sealed class AppSettings
     public int ManualProcessId { get; set; }
 
     public bool LogExpanded { get; set; }
+
+    public AppTheme Theme { get; set; } = AppTheme.Auto;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {

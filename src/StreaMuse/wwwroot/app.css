@@ -1,6 +1,82 @@
 /* Layout only. All colour, type and spacing come from the Industry design system in styles.css,
    which is vendored verbatim and must not be edited; overrides belong here. */
 
+/* - dark theme -
+   The system ships one light palette, so dark mode restates its tokens. The two blocks are the same
+   list twice because a page whose theme is Auto carries no attribute at all: only the media query
+   paints it, and only before app.js has read the setting. */
+:root {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --color-bg: #141517;
+  --color-surface: #1c1e21;
+  --color-text: #e7e8ea;
+  --color-divider: color-mix(in srgb, #e7e8ea 18%, transparent);
+  --color-accent: #7ea6cd;
+  --color-accent-2: #8ba5c0;
+
+  --color-accent-100: #1d2d3d;
+  --color-accent-200: #2c455d;
+  --color-accent-300: #416180;
+  --color-accent-400: #597ea3;
+  --color-accent-600: #94bce3;
+  --color-accent-700: #b5d9fd;
+  --color-accent-800: #d6ebff;
+  --color-accent-900: #eef6ff;
+
+  --color-accent-2-100: #1f2d3a;
+  --color-accent-2-200: #314457;
+  --color-accent-2-300: #486077;
+  --color-accent-2-400: #627d98;
+  --color-accent-2-600: #9ebbd8;
+  --color-accent-2-700: #bdd8f2;
+  --color-accent-2-800: #d6ebff;
+  --color-accent-2-900: #eef6ff;
+
+  --shadow-sm: 0 1px 2px color-mix(in srgb, #000 45%, transparent);
+  --shadow-md: 0 3px 10px color-mix(in srgb, #000 50%, transparent);
+  --shadow-lg: 0 12px 32px color-mix(in srgb, #000 60%, transparent);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+
+    --color-bg: #141517;
+    --color-surface: #1c1e21;
+    --color-text: #e7e8ea;
+    --color-divider: color-mix(in srgb, #e7e8ea 18%, transparent);
+    --color-accent: #7ea6cd;
+    --color-accent-2: #8ba5c0;
+
+    --color-accent-100: #1d2d3d;
+    --color-accent-200: #2c455d;
+    --color-accent-300: #416180;
+    --color-accent-400: #597ea3;
+    --color-accent-600: #94bce3;
+    --color-accent-700: #b5d9fd;
+    --color-accent-800: #d6ebff;
+    --color-accent-900: #eef6ff;
+
+    --color-accent-2-100: #1f2d3a;
+    --color-accent-2-200: #314457;
+    --color-accent-2-300: #486077;
+    --color-accent-2-400: #627d98;
+    --color-accent-2-600: #9ebbd8;
+    --color-accent-2-700: #bdd8f2;
+    --color-accent-2-800: #d6ebff;
+    --color-accent-2-900: #eef6ff;
+
+    --shadow-sm: 0 1px 2px color-mix(in srgb, #000 45%, transparent);
+    --shadow-md: 0 3px 10px color-mix(in srgb, #000 50%, transparent);
+    --shadow-lg: 0 12px 32px color-mix(in srgb, #000 60%, transparent);
+  }
+}
+
 html,
 body {
   height: 100%;

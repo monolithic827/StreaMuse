@@ -254,6 +254,20 @@ earlier rules, which causes two traps worth knowing:
 carry a `style` that is either a declaration *string* or a property object - `apply()` handles both,
 because passing a string to `Object.assign` throws and silently aborts the remaining bindings.
 
+**Theming.** The system ships one light palette, so dark mode restates its tokens in `app.css`. The
+accent ramps are reversed there - `--color-accent-100` is the darkest step - because every pairing in
+the system reads one end as a ground and the other as ink (`.tag-accent`, the status tags in
+`buildView`), and only reversing keeps those legible. The neutral ramp is left alone: its only uses
+are the modal scrim and the inactive dots, which want the same value either way. A theme of `Auto`
+sets no `data-theme` at all, so the `prefers-color-scheme` block paints it - which is also what makes
+the first frame right before `app.js` has read the setting, and why that block is the token list a
+second time. WebView2 follows the Windows app theme for that query with no host setting.
+
+The window behind the page is not covered by any of it: `MainWindow.ApplyTheme` paints what shows
+before the first paint and wherever WebView2 lags a resize. The page posts every change, so the host
+only resolves the setting itself - `Auto` against the registry's `AppsUseLightTheme` - for the frames
+before the page has loaded.
+
 ## Not yet verified
 
 The Spotify **desktop app** branch has never run - it is not installed on the development machine, so

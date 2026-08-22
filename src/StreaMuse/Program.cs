@@ -77,7 +77,7 @@ internal static class Program
 
         _ = Task.Run(() => discovery.RunAsync(lifetime.Token), lifetime.Token);
 
-        using var window = new MainWindow($"http://127.0.0.1:{controlPort}/", hub);
+        using var window = new MainWindow($"http://127.0.0.1:{controlPort}/", hub, settings);
         Application.Run(window);
 
         Shutdown(lifetime, pipeline, app, hub);

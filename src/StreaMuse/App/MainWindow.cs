@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using Microsoft.Win32;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 using StreaMuse.Settings;
@@ -30,7 +31,7 @@ public sealed partial class MainWindow : Form
     /// <summary>Device pixels the window was grown by to fit the pane, and so may give back.</summary>
     private int _grownForDetails;
 
-    public MainWindow(string startUrl, StateHub hub)
+    public MainWindow(string startUrl, StateHub hub, AppSettings settings)
     {
         _startUrl = startUrl;
         _hub = hub;
@@ -38,15 +39,38 @@ public sealed partial class MainWindow : Form
         Text = "StreaMuse";
         FormBorderStyle = FormBorderStyle.None;
         StartPosition = FormStartPosition.CenterScreen;
-        BackColor = Color.FromArgb(0xF2, 0xF2, 0xF3);
         ClientSize = new Size(DefaultWidth, DefaultHeight);
 
         _web.Dock = DockStyle.Fill;
-        _web.DefaultBackgroundColor = Color.FromArgb(0xF2, 0xF2, 0xF3);
         Controls.Add(_web);
+
+        ApplyTheme(IsDark(settings.Theme));
 
         Load += async (_, _) => await InitializeWebViewAsync();
     }
+
+    /// <summary>
+    /// The ground the page is painted on: what shows before the first paint and wherever WebView2
+    /// lags a resize. The page posts every later change, so this only has to resolve the setting
+    /// once - Auto against the same Windows app theme the page reads as prefers-color-scheme.
+    /// </summary>
+    private void ApplyTheme(bool dark)
+    {
+        var ground = dark ? Color.FromArgb(0x14, 0x15, 0x17) : Color.FromArgb(0xF2, 0xF2, 0xF3);
+
+        BackColor = ground;
+        _web.DefaultBackgroundColor = ground;
+    }
+
+    private static bool IsDark(AppTheme theme) => theme switch
+    {
+        AppTheme.Dark => true,
+        AppTheme.Light => false,
+        _ => Registry.GetValue(
+            @"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+            "AppsUseLightTheme",
+            1) is 0
+    };
 
     protected override CreateParams CreateParams
     {
@@ -263,6 +287,10 @@ public sealed partial class MainWindow : Form
             case "detailsHeight":
                 SetDetailsHeight(command.Height ?? 0);
                 break;
+
+            case "theme":
+                ApplyTheme(command.Dark ?? false);
+                break;
         }
     }
 
@@ -291,7 +319,7 @@ public sealed partial class MainWindow : Form
         PropertyNameCaseInsensitive = true
     };
 
-    private sealed record HostCommand(string? Command, double? Height);
+    private sealed record HostCommand(string? Command, double? Height, bool? Dark);
 
     protected override void Dispose(bool disposing)
     {

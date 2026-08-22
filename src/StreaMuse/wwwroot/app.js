@@ -2,12 +2,16 @@
 
 const METER_BARS = 34;
 const SOURCE_LABELS = { apple: 'Apple Music', spotify: 'Spotify', external: 'External' };
+const THEMES = ['Auto', 'Dark', 'Light'];
+
+const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
 
 let state = null;
 let settings = null;
 let copiedUntil = 0;
 let socket = null;
 let reportedDetailsHeight = -1;
+let appliedTheme = '';
 
 // ── transport ───────────────────────────────────────────────────────────────
 
@@ -160,6 +164,29 @@ function render() {
   renderLog();
   renderDeps();
   reportDetailsHeight();
+  applyTheme();
+}
+
+// Auto carries no attribute, so the media query in app.css picks the palette; the host is told the
+// colour it resolved to either way, since the window is what shows through a resize.
+function applyTheme() {
+  const mode = settings.theme;
+  const dark = mode === 'Dark' || (mode === 'Auto' && darkQuery.matches);
+  const signature = mode + (dark ? ' dark' : ' light');
+
+  if (signature === appliedTheme) return;
+  appliedTheme = signature;
+
+  if (mode === 'Auto') document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.dataset.theme = mode.toLowerCase();
+
+  const button = document.getElementById('btn-theme');
+  for (const icon of button.querySelectorAll('[data-theme-icon]')) {
+    icon.style.display = icon.dataset.themeIcon === mode ? '' : 'none';
+  }
+  button.title = 'Theme - ' + (mode === 'Auto' ? 'auto · ' + (dark ? 'dark' : 'light') : mode.toLowerCase());
+
+  toHost('theme', { dark: dark });
 }
 
 function reportDetailsHeight() {
@@ -446,6 +473,12 @@ document.getElementById('btn-log').onclick = () => saveSettings({ logExpanded: !
 
 // The pane also grows as the health table and log fill in, which no render() need follow.
 new ResizeObserver(reportDetailsHeight).observe(document.getElementById('log-panel'));
+
+document.getElementById('btn-theme').onclick = () => {
+  saveSettings({ theme: THEMES[(THEMES.indexOf(settings.theme) + 1) % THEMES.length] });
+};
+
+darkQuery.addEventListener('change', () => { if (settings) applyTheme(); });
 
 document.getElementById('btn-settings').onclick = openSettings;
 document.getElementById('btn-cancel').onclick = () => { document.getElementById('settings').hidden = true; };

@@ -127,5 +127,6 @@ public static class ControlApi
         target.AutoTunnel = source.AutoTunnel;
         target.ManualProcessId = source.ManualProcessId;
         target.LogExpanded = source.LogExpanded;
+        target.Theme = source.Theme;
     }
 }
