@@ -71,7 +71,6 @@ function buildView() {
   const statusLabels = { idle: 'Idle', starting: 'Starting', running: 'Streaming', error: 'Error' };
 
   return {
-    host: 'host · ' + state.host,
     sourceName: SOURCE_LABELS[source.source] || source.source,
     externalMode: source.source === 'external',
     codecLine: running ? 'AAC 48 kHz · captured' : (detected ? 'ready' : 'no stream'),

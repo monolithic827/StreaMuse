@@ -62,7 +62,6 @@ public sealed record StateSnapshot(
     IReadOnlyList<DependencyView> Dependencies,
     IReadOnlyList<LogLine> Log,
     string? LocalUrl,
-    string Host,
     object Settings)
 {
     [JsonPropertyName("type")]

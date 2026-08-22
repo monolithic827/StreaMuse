@@ -89,7 +89,6 @@ public sealed class StateHub
                 _deps,
                 [.. _log],
                 _localUrl,
-                Environment.MachineName.ToLowerInvariant(),
                 Settings);
         }
     }
