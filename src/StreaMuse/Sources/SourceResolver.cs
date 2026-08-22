@@ -23,6 +23,9 @@ public sealed class SourceResolver
     private static readonly string[] AppleProcessNames = ["applemusic", "itunes"];
     private static readonly string[] AppleAppIdHints = ["applemusic", "appleinc.applemusic", "itunes"];
 
+    /// <summary>Space, em dash, space - what Apple Music joins artist and album with.</summary>
+    private const string AppleArtistAlbumSeparator = " — ";
+
     /// <summary>Apple Music renders through AMPLibraryAgent, so it is tried first. See CLAUDE.md.</summary>
     private static readonly string[] AppleAudioProcessNames = ["amplibraryagent", "applemusic", "itunes"];
 
@@ -60,9 +63,31 @@ public sealed class SourceResolver
             ? requested
             : MusicSource.External;
 
-        return source == MusicSource.External
+        var resolved = source == MusicSource.External
             ? ResolveExternal(manualProcessId, audioSessions, mediaSessions, tree)
             : ResolveDedicatedApp(source, audioSessions, mediaSessions, tree);
+
+        return resolved with { Metadata = SplitAppleArtist(resolved.Metadata) };
+    }
+
+    /// <summary>Apple Music leaves AlbumTitle empty and packs "artist — album" into the artist
+    /// field. See CLAUDE.md.</summary>
+    private static SmtcSession? SplitAppleArtist(SmtcSession? session)
+    {
+        if (session is null || session.Album.Length > 0) return session;
+        if (!AppleAppIdHints.Any(h => session.AppId.Contains(h, StringComparison.OrdinalIgnoreCase)))
+        {
+            return session;
+        }
+
+        var at = session.Artist.IndexOf(AppleArtistAlbumSeparator, StringComparison.Ordinal);
+        if (at < 0) return session;
+
+        return session with
+        {
+            Artist = session.Artist[..at],
+            Album = session.Artist[(at + AppleArtistAlbumSeparator.Length)..]
+        };
     }
 
     private static ResolvedSource ResolveDedicatedApp(

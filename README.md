@@ -13,7 +13,7 @@ into 1-second mpegts HLS segments - the format VRChat's AVPro player handles rel
  │  media transport controls  ──> CoverFrames ─┴──> ffmpeg ──> hls/*.ts   │
  │                                                                        │
  │  :7788 loopback  control panel (WebView2)                              │
- │  :7789 loopback  /live/{key}/index.m3u8  <── cloudflared ──> internet   │
+ │  :7789 loopback  /live/{key}/index.m3u8  <── cloudflared ──> internet  │
  └────────────────────────────────────────────────────────────────────────┘
 ```
 

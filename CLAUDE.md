@@ -175,6 +175,12 @@ is not enough on Windows: `Path.Combine` discards its first argument for a drive
   never reaches it: capturing the process behind the window records pure silence. Availability still
   keys on `AppleMusic.exe` - the agent outlives the window - but the capture target must be the
   agent, which is why `AppleAudioProcessNames` is a separate list and lists it first.
+- Apple Music does not fill `AlbumTitle` at all. It reports a space, em dash (U+2014), space - in
+  *both* `Artist` and `AlbumArtist`, so there is no clean field to read and
+  `SourceResolver.SplitAppleArtist` has to split the string. It splits on the first separator, since
+  an album is likelier to contain one than an artist, and only for Apple app ids: no other app's
+  format is known, and a guess here is burned into the outgoing video. Spotify fills both fields
+  properly, and every other app is `External`, where the fields are whatever that app chose.
 - `ManualProcessId` persists across runs while pids are recycled, so a manual pid that is not in
   the process snapshot resolves as *not detected* rather than as a target that fails at attach time.
 - Auto target election prefers whichever candidate SMTC reports as *playing*. Do not elect on
