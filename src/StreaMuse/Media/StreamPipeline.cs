@@ -15,7 +15,8 @@ public sealed class StreamPipeline(
     DependencyManager deps,
     DiscoveryService discovery,
     ArtworkStore artwork,
-    CloudflaredTunnel tunnel)
+    CloudflaredTunnel tunnel,
+    DjAddonHost djHost)
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Stopwatch _clock = new();
@@ -147,7 +148,7 @@ public sealed class StreamPipeline(
 
             var token = session.Token;
             _sessionTasks = Task.WhenAll(
-                Task.Run(() => RunPacerAsync("audio", () => _audioPacer.RunAsync(audioPipe, _clock, token), token)),
+                Task.Run(() => RunPacerAsync("audio", () => _audioPacer.RunAsync(audioPipe, _clock, token, MixBlock), token)),
                 Task.Run(() => RunPacerAsync("video", () => videoPacer.RunAsync(videoPipe, _clock, settings.Fps, token), token)),
                 Task.Run(() => PublishTelemetryAsync(token)));
 
@@ -296,6 +297,24 @@ public sealed class StreamPipeline(
         catch (Exception ex)
         {
             hub.Log(LineLevel.Error, $"telemetry stopped: {ex.Message}");
+        }
+    }
+
+    /// <summary>Handed to the audio pacer, so it runs on the pacer's wall clock rather than on capture
+    /// activity - see AudioPacer.RunAsync. A broken addon must never take the stream down with it, so
+    /// a throw passes the block through unmixed.</summary>
+    private float[] MixBlock(float[] block)
+    {
+        if (djHost.Addon is not { } addon || !settings.DjAddonEnabled) return block;
+
+        try
+        {
+            return addon.Mix(block);
+        }
+        catch (Exception ex)
+        {
+            hub.Log(LineLevel.Warn, $"DJ addon mix failed: {ex.Message}");
+            return block;
         }
     }
 

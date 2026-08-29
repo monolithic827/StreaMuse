@@ -16,10 +16,17 @@ public sealed class DependencyManager(StateHub hub)
     private const string CloudflaredUrl =
         "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe";
 
+    private const string YtDlpUrl =
+        "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe";
+
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly SemaphoreSlim _ytDlpGate = new(1, 1);
 
     public string? FfmpegPath { get; private set; }
     public string? CloudflaredPath { get; private set; }
+
+    /// <summary>Only ever fetched when the DJ addon is enabled - most installs never touch this.</summary>
+    public string? YtDlpPath { get; private set; }
 
     /// <summary>Resolves both tools, downloading anything missing, and publishes the result. Safe to
     /// call repeatedly.</summary>
@@ -83,6 +90,38 @@ public sealed class DependencyManager(StateHub hub)
         finally
         {
             TryDelete(zip);
+        }
+    }
+
+    /// <summary>Idempotent and separately gated from ffmpeg/cloudflared, since it's only ever needed
+    /// when the DJ addon is loaded and enabled.</summary>
+    public async Task EnsureYtDlpAsync(CancellationToken ct = default)
+    {
+        await _ytDlpGate.WaitAsync(ct);
+        try
+        {
+            YtDlpPath ??= Resolve("yt-dlp.exe");
+            if (YtDlpPath is not null) return;
+
+            Directory.CreateDirectory(Paths.BinDir);
+            var target = Path.Combine(Paths.BinDir, "yt-dlp.exe");
+            hub.Log(LineLevel.Info, "yt-dlp not found - downloading (needed for DJ song requests)");
+
+            try
+            {
+                await DownloadAsync(YtDlpUrl, target, "yt-dlp", ct);
+                YtDlpPath = target;
+                hub.Log(LineLevel.Info, $"yt-dlp installed to {target}");
+            }
+            catch (Exception ex)
+            {
+                hub.Log(LineLevel.Error, $"yt-dlp download failed: {ex.Message}");
+                TryDelete(target);
+            }
+        }
+        finally
+        {
+            _ytDlpGate.Release();
         }
     }
 

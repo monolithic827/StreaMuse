@@ -32,7 +32,13 @@ dotnet run --project src/StreaMuse             # build + run
 
 StreaMuse.exe --probe                          # dump every audio session and SMTC media session
 StreaMuse.exe --test-capture [seconds]         # record the resolved source to WAV, report drift
+
+dotnet build src/StreaMuse.DjAddon/StreaMuse.DjAddon.csproj   # build the optional DJ addon
 ```
+
+The addon builds to its own `StreaMuse.DjAddon.dll`, separate from the main exe. To enable it, copy
+that DLL (from `src/StreaMuse.DjAddon/bin/<config>/net10.0-windows10.0.19041.0/`) into
+`%LOCALAPPDATA%\StreaMuse\plugins\`, restart StreaMuse, and turn on "Enable DJ mixing" in Settings.
 
 `.github/workflows/build.yml` builds the release exe: self-contained and single-file, so the whole
 app ships as one file that runs without a .NET install. `IncludeNativeLibrariesForSelfExtract` is
@@ -239,6 +245,30 @@ is not enough on Windows: `Path.Combine` discards its first argument for a drive
   no teardown of ours runs; measured, a killed app otherwise leaves cloudflared serving the tunnel
   indefinitely. ffmpeg happens to die on its own when its pipes break, but do not rely on it.
 
+## The DJ window (`App/DjWindow.cs`, `wwwroot/dj.html`)
+
+The decks are a second top-level window, not a dialog inside the panel, so both can be watched at once.
+It is frameless for the same reason `MainWindow` is - the page draws its own title bar and posts
+`minimize`/`close`/`drag` back - but carries none of the details-pane sizing, since nothing in it grows
+the window.
+
+- Both windows share one `CoreWebView2Environment`. `MainWindow` keeps the one it creates and hands it
+  over; two environments over a single user data folder is a documented conflict, and sharing is what
+  WebView2 expects for additional windows in a process.
+- Closing hides rather than disposes (`OnFormClosing` cancels a user close), so reopening skips
+  WebView2 startup and the page keeps its socket. The real teardown is `MainWindow.Dispose`.
+- `dj.js` is deliberately separate from `app.js` rather than shared: `app.js` binds elements this page
+  does not have, and would throw partway through `render` on the first snapshot. Both take the same
+  snapshot from the same `/ws`; the DJ page reads only `state.dj`.
+- The panel keeps no DJ state of its own. `buildDjView` reduces to whether a plugin is loaded, which is
+  all the button that opens this window needs.
+- To drive either window in a test, UI Automation reaches into WebView2 content: find the window by
+  name, then elements by `AutomationId` (the DOM id). `InvokePattern` fires the page's own click
+  handlers, and `ValuePattern.SetValue` fills inputs - that is how the request path in this window was
+  verified end to end. Note a `PrintWindow` screenshot of a WebView2 window renders the page at logical
+  size into a device-pixel bitmap, so on a scaled display the capture looks cropped when the window is
+  fine.
+
 ## Control panel (`wwwroot/`)
 
 `styles.css` is the Industry design system, vendored **verbatim** from a Claude Design export - do
@@ -268,6 +298,127 @@ before the first paint and wherever WebView2 lags a resize. The page posts every
 only resolves the setting itself - `Auto` against the registry's `AppsUseLightTheme` - for the frames
 before the page has loaded.
 
+## DJ addon
+
+An optional module lives at `src/StreaMuse.DjAddon/`, built to its own DLL and never referenced by
+the main project. `IDjAddon` (`Media/IDjAddon.cs`) is the entire compile-time surface between the
+two; everything else - the queue, fetch logic, audition, beat detection, time-stretching - lives only
+in the addon assembly. `DjAddonHost` scans `%LOCALAPPDATA%\StreaMuse\plugins` for *any* assembly
+implementing `IDjAddon` (not a fixed file name) and loads the first one via `AssemblyLoadContext`;
+with nothing installed, `StateHub`'s `dj` snapshot field is null and the panel's DJ card stays hidden,
+which is the whole mechanism behind shipping mixing separately from the app.
+
+- Plugins install through the panel (`POST /api/plugins/install`, a `.dll` or a `.zip`) rather than by
+  hand. A zip is flattened to leaf file names deliberately: `ZipArchiveEntry.FullName` is
+  attacker-controlled and a `../` in it would otherwise write anywhere on disk (zip slip), so only
+  `entry.Name` is used and `SafeTarget` re-checks the result stays inside the plugins folder. Installing
+  a plugin runs someone else's code in-process - there is no sandbox and cannot meaningfully be one;
+  the control API is loopback-only, so the trust boundary is the same as copying the file in by hand.
+- The `/api/dj/*` routes are mapped unconditionally and null-check the addon per call, because a plugin
+  installed while the app is running is activated immediately (`DjAddonHost.TryLoadInstalled`) and
+  routes decided at startup would 404 for it. Loading is one-shot: once an addon is live its `Mix` sits
+  on the audio path, so replacing it under a running stream is not worth the failure modes and the
+  panel asks for a restart instead.
+
+- **A plugin travels with its own dependencies, and three project settings make that work.** The
+  reference to the main project is `Private="false"` *and* `ExcludeAssets="runtime"`; the project sets
+  `CopyLocalLockFileAssemblies=true`. Without the first, a second `StreaMuse.dll` lands in the plugins
+  folder and the `IDjAddon` cast fails at runtime - identical source, distinct type identity to the
+  CLR. Without the last, a class library does not copy its *own* packages to the output at all, so
+  `SoundTouch.Net.dll` never ships and the plugin dies on first use. Without the middle one, the
+  host's packages (NAudio, SkiaSharp) flow through the reference and get carried along too.
+- `PluginLoadContext` resolves the plugin's dependencies from beside it, via
+  `AssemblyDependencyResolver` with a plain sibling-file probe behind it for hand-copied plugins that
+  arrive without their `.deps.json`. It returns null for `StreaMuse` specifically, so the contract
+  always resolves to the running host through `Default` - resolving that one locally is the failure
+  the `Private="false"` above exists to prevent, and the guard means it cannot happen even if someone
+  drops a copy in the folder.
+- **`Mix` hangs off the audio pacer, never off the capture callback.** `StreamPipeline.MixBlock` is
+  handed to `AudioPacer.RunAsync`, which applies it to each paced block just before writing it, so a
+  DJ track advances on wall clock. Wiring it to `capture.SamplesAvailable` instead - the obvious place,
+  and where this started - is silently broken by the pacing invariant above: process loopback delivers
+  *nothing* while the source is quiet, so the deck froze exactly when the live source went silent,
+  which is the one case it exists to cover. Measured: with capture pointed at a silent process the
+  stream sat at -91 dB (digital silence) under the old wiring and carries the track at -25 dB under
+  this one. `Mix` still must not block - fetching, decoding and retiming all happen ahead of time on
+  background tasks, and it only does a per-sample gain blend against already-decoded PCM. A throw
+  passes the block through unmixed rather than taking the stream down; with nothing queued it returns
+  its input unchanged, so the addon stays invisible to the rest of the pipeline.
+- Every request is fetched the same way, regardless of the active capture source: `yt-dlp`
+  search-and-download (`ytsearch1:`), decoded through ffmpeg to raw interleaved float32 PCM. `--print`
+  implies `--simulate` in yt-dlp unless `--no-simulate` is also passed - without it, `YtDlpFetcher`
+  fetched the title and downloaded nothing at all, reporting success right up until no file existed
+  on disk. There is deliberately no Spotify (or other streaming-service) integration: this addon only
+  ever downloads and mixes in audio itself, it never controls another app's playback.
+- Nothing reaches the stream unauditioned. `Mixing/TrackAudition.cs` is the pre-listen a DJ does in
+  headphones: it rejects a download that is too short or effectively silent - a video with an empty
+  audio track, a fetch that "succeeded" into noise - and finds where the music actually starts so the
+  mix does not crossfade the live source out into an intro of near-silence. A rejected track is logged
+  with the reason and never queued; the alternative is discovering it as dead air on the live stream.
+- `BeatDetector` wraps **SoundTouch's `BpmDetect`** (`SoundTouch.Net`, a managed rewrite, so nothing
+  native ships beside the plugin). Three detectors were hand-rolled before it - energy flux, a
+  kick-band low-pass, then spectral flux over an FFT - and each had to be rebuilt once real music
+  exposed it; the first two could not tell Nirvana from white noise. The library is the same idea done
+  properly and, more importantly, exercised against far more material than a four-track test set. It
+  also returns beat positions with a strength each, which is what a transition lands on.
+- **Confidence is beat *spacing*, not beat strength** (`Regularity`). SoundTouch returns weak candidate
+  beats when there is no beat present, and they are all similar, so any strength-relative test passes
+  them: measured, white noise scored **100%**. Spacing separates cleanly - real beats arrive on a grid,
+  spurious ones arrive whenever - and takes noise to 4%. Gaps are measured against the nearest whole
+  multiple of the period so a missed beat does not count against the track.
+- **The period is fitted to the beat positions, not taken from `GetBpm`** (`RefinePeriod`). The
+  library's BPM figure is rounded enough to be ~0.2% out, which is nothing per beat and 17 ms across a
+  sixteen-beat transition - the mix audibly drifts as it runs. A least-squares line through the beats
+  takes that to 1.7 ms.
+- A track's grid is read from its first `GridWindowSeconds`, not the whole file: averaged over four
+  minutes, beat strength is diluted by intros and breakdowns (deadmau5 scored 3% across the file and
+  63% on a window), and the opening is the part whose phase is actually entered on.
+- The live grid is re-read every 2s from a rolling 8s window, fed by a `ConcurrentQueue` that `Mix`
+  only enqueues into (O(1) on the audio path). It is the less trustworthy of the two - it tracks
+  whatever someone else's app is playing, which may not be 4/4, may be ambient, may be mid
+  tempo-change - so `TimeStretcher`'s `atempo` retime only runs when both sides clear the confidence
+  gate. Below it the track plays at its native tempo with a fade, which is the honest answer.
+- **The transition is a bass swap, not a crossfade** (`Mixing/DjTransition.cs`). Two tracks at half
+  volume gives two basslines and two kicks at once, which is mud, and mid-fade everything sounds thin.
+  Instead both decks stay at full level and the *low end* changes hands: the incoming track comes in
+  high-passed (`Biquad`, 220 Hz) so it rides on top of the live low end, the bass swaps across on beat
+  8 of 16, and only then does the live source walk out. The envelope is measured in beats, not seconds,
+  because the swap has to land on a beat to sound deliberate. `SkipCurrent` moves the playhead into the
+  closing transition rather than cutting, so a skip mixes out the same way the ending would.
+- There are two decks. A request made while something is playing is **not** started on arrival - it
+  waits for its cue, which `Mix` checks once per block: a transition's length before the current track
+  runs out, so the blend finishes as that track ends. `StartNext(handover: true)` then moves the
+  playing track to `_outgoing` and brings the new one in over it; `handover: false` (a fetch finishing,
+  a track ending) only starts when the decks are empty. Skip takes the same handover path immediately,
+  which is the difference between "next, now" and waiting for the cue. The envelope is the same either
+  way - whatever is leaving plays the "live" role in `DjTransition`, which is the captured source only
+  when no other track is on its way out. A second handover is refused while one is in progress; that
+  would need a third deck and would land off the grid.
+- A handover is scheduled on the *outgoing track's* own phrase (`NextPhraseOnDeck`), not on the live
+  grid and not at the instant the cue fires - coming in on a 4-beat boundary of the record that is
+  leaving is what makes it land musically instead of mid-bar.
+- Beat *phase* matters as much as tempo: `BeatDetector.Grid` carries where the beats fall, and
+  `StartNext` schedules the drop on a 4-beat boundary of whatever it is mixing over while seeking the
+  track to its own first beat, so beat one of the mix is beat one of both.
+- A track's confidence is measured *before* any retime and kept: `atempo` smears transients enough to
+  roughly halve it (Stayin' Alive read 100%, then 18% after a x1.178 stretch), so re-gating on the
+  post-retime figure rejects exactly the tracks that were just matched successfully. The re-read after
+  retiming is only for the new phase and period.
+- **Both** sides of a handover must clear the confidence gate, not just the incoming one. A track can
+  carry a BPM figure while barely registering a beat at all - Never Gonna Give You Up read 114 BPM at
+  16% - and matching to that is guesswork that lands worse than an honest fade. Live scheduling anchors on
+  `LastBeatFrames`, never `PhaseFrames` - the latter is a best fit across the whole window, and
+  extrapolating it forward multiplied the period error by every beat in the window, measured at ~50 ms
+  out (audible as a flam). Anchoring on the most recent onset plus parabolic interpolation of the
+  autocorrelation peak brought that to 2.5 ms, with ~11 ms of drift across a full 16-beat transition.
+- With no usable live beat grid - a silent or beatless source - there is nothing to lock to and nothing
+  to swap, so the transition degrades to an equal-power fade over `CrossfadeSeconds` and says so in the
+  log. Do not "fix" this by forcing the beatmatched path: a swap against a grid that isn't there lands
+  wrong, which sounds far worse than a fade.
+- `SoftClip` on the summed output is not optional. Keeping both decks at full level is the point of a
+  bass swap, and downloads routinely arrive at or above 0 dBFS already (two of the test tracks peaked
+  at +2.6 and +1.8 dB), so their sum clips hard without it - measured at -0.1 dB peak on the stream
+  before it was added.
 ## Not yet verified
 
 The Spotify **desktop app** branch has never run - it is not installed on the development machine, so
@@ -278,3 +429,44 @@ itself has been verified end to end against real playback on the Store build
 Window sizing has only been exercised on the development machine: one 2560x1440 monitor at 125% with
 a bottom taskbar. The DPI and multi-monitor paths (`OnDpiChanged`, `Screen.FromControl`, a taskbar on
 another edge) are written against the per-monitor APIs but unmeasured.
+
+The DJ addon's request → fetch → audition → crossfade path has run end to end against a real stream,
+measured against a *deliberately silent* capture target (`ManualProcessId` pointed at an idle process,
+verified at -91 dB) so that any audio in the output could only be the DJ track: a request for "Darude
+Sandstorm" was fetched, auditioned ("232s, peak -9.0 dB, skipped 2.0s of intro, 136 BPM"), and carried
+the stream at -25 dB, with skip fading it back out to -73 dB. Picking a silent target matters - an
+earlier run of the same test against an idle-looking Discord was measuring Discord's own audio at
+-23 dB, not the mix, and would have "passed" even with the deck completely frozen. Plugin install was
+exercised the same way, through the real endpoint: `.dll` and `.zip` both install and activate, a
+`.txt` is refused.
+
+The mixing DSP is verified two ways, and it needs both. A throwaway harness runs synthetic click
+tracks with silence and white-noise controls, because that is the only way to get a *known* ground
+truth for tempo and beat position. **Synthetic tests alone were badly misleading**: every one of them
+passed while the detector could not tell Nirvana from white noise, so the harness also measures four
+real decoded tracks (Daft Punk, Bee Gees, Nirvana, deadmau5) whole-file and in rolling 8s windows. It
+is the real-music numbers that drove every calibration constant in `BeatDetector` and `DjAddon`. Any
+future change to onset detection or confidence must be re-measured against real tracks, not clicks.
+
+Between them these caught the real bugs, all now fixed: confidence metrics that measured loudness, then
+autocorrelation peakiness, then beat strength - the last of which scored white noise 100%; octave
+correction walking to the 200 BPM ceiling on real music; beat phase ~50 ms out; period drift across a
+transition; whole-file confidence diluted by intros; post-retime confidence rejecting tracks that had
+just been matched; and the summed output clipping.
+
+Where the detector stands after the switch to SoundTouch, measured on the same set: 128 BPM click read
+exactly, phase within 7 ms, 1.7 ms drift over a sixteen-beat transition, noise at 4% against a
+real-music median of 71%. It reads Nirvana at half-time and finds no tempo at all in Strobe's ambient
+opening - but scores both near zero, so they fall back to a fade rather than mixing wrong. **It does
+not handle very fast material**: a 192 BPM click comes back as its 64 BPM subharmonic at 0% confidence.
+That is a safe failure, not a silent one, but hardcore and drum-and-bass will fade rather than mix.
+
+Verified live end to end, against a deliberately silent capture target so the DJ audio could be
+isolated: two requests, the second beat-matched over the first (Stayin' Alive stretched x1.178 from
+104 to 122 BPM and dropped on the beat over Around The World) without waiting for it to finish.
+
+What is still unverified: a **live capture source with a real beat**. Every live run has used a silent
+target, so the live-side rolling grid has never actually driven a transition - only track-to-track
+handover has. The parts most likely to disappoint there are live-side beat tracking through whatever a
+capture happens to contain, and whether a 16-beat blend holds alignment when the other side's tempo is
+human rather than exact.

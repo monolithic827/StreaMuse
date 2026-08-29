@@ -71,6 +71,59 @@ otherwise the panel says *no track info reported* rather than guessing.
 separate loopback port that cloudflared never sees. Everything on the public port other than
 `/live/{key}/*.m3u8|.ts` returns 404 - verified, including path traversal attempts.
 
+## DJ addon (optional)
+
+StreaMuse ships as the plain re-streamer; extra features arrive as plugins you install yourself. The
+DJ plugin lets you request a song from the control panel and have it mixed into the live stream -
+fetched, auditioned, tempo-matched to what's currently playing, and crossfaded in and back out.
+
+To install any plugin: **Settings → Plugins → Install plugin**, and pick a `.dll` or a `.zip`. If
+nothing is loaded yet it activates immediately; otherwise restart StreaMuse. Installed plugins are
+listed there with which one is active.
+
+For the DJ plugin specifically: build `src/StreaMuse.DjAddon/StreaMuse.DjAddon.csproj`, then install
+**both** `StreaMuse.DjAddon.dll` and `SoundTouch.Net.dll` from its output folder - zip them together
+and install the zip in one go - and tick **Enable DJ mixing** in Settings. A **DJ** button
+appears in the top bar and opens the decks in **their own window** - request box, what's playing, the
+queue and skip - so you can keep an eye on the stream and the decks at the same time.
+
+Ask for a song while one is playing and it waits in the queue, then comes in over the closing bars of
+the current track - beat-matched to it, on a phrase boundary - so the blend finishes as that track
+ends, the way a set runs. **Skip to next** brings it in immediately instead; it still mixes rather than
+cuts, and mixes back to your live audio if nothing else is queued.
+
+A plugin runs as part of StreaMuse with the same access to your machine that StreaMuse has - there is
+no sandbox. Only install plugins you trust.
+
+Every request is fetched the same way regardless of your source: the addon searches YouTube with
+`yt-dlp` and downloads the best-match audio on the fly. **This is against YouTube's Terms of
+Service** - it's the only practical way to turn a free-text request into audio, but using it is your
+call and your responsibility, the same posture this project already takes toward auto-downloading
+ffmpeg/cloudflared, just spelled out here because this one fetches copyrighted media. There is no
+Spotify or other streaming-service integration - the addon only ever downloads and mixes in audio
+itself, it never controls another app's playback.
+
+Like a DJ cueing a record in headphones, the plugin listens to a track before the stream ever hears
+it: it checks the download is actually playable, refuses silent or too-short ones outright, and finds
+where the music really starts so the mix doesn't fade the live source out into a silent intro. What it
+found gets logged - *"auditioned: 232s, peak -9.0 dB, skipped 2.0s of intro, 136 BPM"*.
+
+The transition is a real one, not a volume fade. Both tracks stay at full level and the *bass* changes
+hands: the requested track comes in with its low end cut so it sits on top of what's playing, the bass
+swaps across on the beat halfway through, and only then does the old track leave. It drops on a beat,
+having matched the tempo first.
+
+Beat detection is [SoundTouch](https://www.surina.net/soundtouch/) (LGPL-2.1, via the managed
+`SoundTouch.Net` package) rather than something home-grown, so it's a properly exercised detector. It's
+still best-effort: it reads the beat from the fetched track and from whatever's already live - an
+unknown capture that might not even be 4/4 - and when it can't find a beat it trusts, it says so and
+does a plain fade instead of forcing a swap that would land wrong. Very fast material (180 BPM and up)
+is a known gap: it reads the half- or third-time and declines, so hardcore and drum-and-bass will fade
+rather than mix.
+
+The requested track plays on its own clock, so it keeps going even when the app you're capturing is
+silent - which is the usual case when you just want to play a request into a quiet stream.
+
 ## Diagnostics
 
 ```powershell

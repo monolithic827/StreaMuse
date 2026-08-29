@@ -74,7 +74,13 @@ public sealed class AudioPacer
         }
     }
 
-    public async Task RunAsync(Stream destination, Stopwatch clock, CancellationToken ct)
+    /// <summary><paramref name="transform"/> runs on the paced block just before it is written, so
+    /// anything it mixes in advances on wall clock rather than on capture activity. Wiring it to the
+    /// capture callback instead silently breaks: process loopback delivers nothing while the source is
+    /// quiet, so a DJ track would freeze exactly when the live source went silent - the case it exists
+    /// to cover. It must return a block of the same length; anything else is ignored.</summary>
+    public async Task RunAsync(
+        Stream destination, Stopwatch clock, CancellationToken ct, Func<float[], float[]>? transform = null)
     {
         var byteBuffer = ArrayPool<byte>.Shared.Rent(SampleRate * Channels * sizeof(float) / 4);
         var scratch = ArrayPool<float>.Shared.Rent(SampleRate * Channels / 4);
@@ -106,6 +112,15 @@ public sealed class AudioPacer
                     silenceInWindow += silentFrames;
 
                     lock (_sync) _silenceFrames += silentFrames;
+                }
+
+                if (transform is not null)
+                {
+                    var block = new float[samplesNeeded];
+                    Array.Copy(scratch, block, samplesNeeded);
+
+                    var mixed = transform(block);
+                    if (mixed.Length == samplesNeeded) Array.Copy(mixed, scratch, samplesNeeded);
                 }
 
                 var byteCount = samplesNeeded * sizeof(float);

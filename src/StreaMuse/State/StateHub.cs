@@ -38,6 +38,7 @@ public sealed class StateHub
     private TunnelState _tunnel = new(TunnelStatus.Off, null, null);
     private IReadOnlyList<DependencyView> _deps = [];
     private string? _localUrl;
+    private Media.DjSnapshot? _dj;
 
     /// <summary>Embedded in each snapshot; the live instance, so every save is reflected.</summary>
     public object Settings { get; init; } = new { };
@@ -53,6 +54,8 @@ public sealed class StateHub
     public void SetDependencies(IReadOnlyList<DependencyView> value) => Mutate(() => _deps = value);
 
     public void SetLocalUrl(string? value) => Mutate(() => _localUrl = value);
+
+    public void SetDj(Media.DjSnapshot? value) => Mutate(() => _dj = value);
 
     public void Log(LineLevel level, string message)
     {
@@ -89,7 +92,8 @@ public sealed class StateHub
                 _deps,
                 [.. _log],
                 _localUrl,
-                Settings);
+                Settings,
+                _dj);
         }
     }
 

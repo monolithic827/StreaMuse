@@ -19,6 +19,15 @@ public sealed partial class MainWindow : Form
     private readonly string _startUrl;
     private readonly StateHub _hub;
 
+    /// <summary>Held so the DJ window can share it: two environments over one user data folder is a
+    /// documented conflict, and sharing is what WebView2 expects for extra windows in a process.</summary>
+    private CoreWebView2Environment? _environment;
+
+    private DjWindow? _djWindow;
+
+    /// <summary>Painted behind both windows; kept so a theme change reaches the DJ window too.</summary>
+    private Color _ground;
+
     /// <summary>Outer size the window opens at; below it the layout collapses.</summary>
     private Size _baseMinimum;
 
@@ -56,10 +65,11 @@ public sealed partial class MainWindow : Form
     /// </summary>
     private void ApplyTheme(bool dark)
     {
-        var ground = dark ? Color.FromArgb(0x14, 0x15, 0x17) : Color.FromArgb(0xF2, 0xF2, 0xF3);
+        _ground = dark ? Color.FromArgb(0x14, 0x15, 0x17) : Color.FromArgb(0xF2, 0xF2, 0xF3);
 
-        BackColor = ground;
-        _web.DefaultBackgroundColor = ground;
+        BackColor = _ground;
+        _web.DefaultBackgroundColor = _ground;
+        _djWindow?.ApplyTheme(_ground);
     }
 
     private static bool IsDark(AppTheme theme) => theme switch
@@ -220,6 +230,7 @@ public sealed partial class MainWindow : Form
             var env = await CoreWebView2Environment.CreateAsync(
                 userDataFolder: Path.Combine(Paths.DataDir, "webview"));
 
+            _environment = env;
             await _web.EnsureCoreWebView2Async(env);
 
             var core = _web.CoreWebView2;
@@ -291,7 +302,29 @@ public sealed partial class MainWindow : Form
             case "theme":
                 ApplyTheme(command.Dark ?? false);
                 break;
+
+            case "openDj":
+                OpenDjWindow();
+                break;
         }
+    }
+
+    /// <summary>Opens the decks in their own window, or brings the existing one back - closing it only
+    /// hides it, so reopening skips WebView2 startup.</summary>
+    private void OpenDjWindow()
+    {
+        if (_environment is null) return;
+
+        if (_djWindow is null or { IsDisposed: true })
+        {
+            _djWindow = new DjWindow(_environment, _startUrl + "dj.html", _hub, _ground) { Owner = this };
+            _djWindow.PlaceBeside(this);
+        }
+
+        _djWindow.Show();
+        if (_djWindow.WindowState == FormWindowState.Minimized) _djWindow.WindowState = FormWindowState.Normal;
+        _djWindow.BringToFront();
+        _djWindow.Activate();
     }
 
     /// <summary>Hands the drag to the window manager so snapping stays native.</summary>
@@ -323,7 +356,13 @@ public sealed partial class MainWindow : Form
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) _web.Dispose();
+        if (disposing)
+        {
+            // Owned, so Windows has already closed it; this is what actually tears down its WebView2.
+            _djWindow?.Dispose();
+            _web.Dispose();
+        }
+
         base.Dispose(disposing);
     }
 }

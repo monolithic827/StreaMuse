@@ -62,7 +62,10 @@ public sealed record StateSnapshot(
     IReadOnlyList<DependencyView> Dependencies,
     IReadOnlyList<LogLine> Log,
     string? LocalUrl,
-    object Settings)
+    object Settings,
+    // Null whenever plugins/StreaMuse.DjAddon.dll isn't loaded - the panel feature-detects on this
+    // rather than on a settings flag, since the flag can be on with nothing installed to back it.
+    Media.DjSnapshot? Dj)
 {
     [JsonPropertyName("type")]
     public string Type => "state";

@@ -114,8 +114,16 @@ function buildView() {
     uptimeLabel: 'up ' + clock(encoder.uptimeSeconds),
 
     running: running,
-    detected: detected
+    detected: detected,
+
+    ...buildDjView(state.dj)
   };
+}
+
+// Null whenever no DJ plugin is loaded, which is what hides the button that opens the DJ window.
+// Everything the decks show lives in dj.js; the panel only needs to know whether they exist.
+function buildDjView(dj) {
+  return { djInstalled: dj !== null && dj !== undefined };
 }
 
 function tunnelText(tunnel) {
@@ -143,6 +151,9 @@ function render() {
   for (const element of document.querySelectorAll('[data-bind-show]')) {
     element.hidden = !view[element.dataset.bindShow];
   }
+
+  // The button that opens the DJ window only exists when a plugin is loaded.
+  document.getElementById('btn-dj').hidden = !view.djInstalled;
 
   for (const button of document.querySelectorAll('[data-main-button]')) {
     button.disabled = !view.detected && !view.running;
@@ -365,7 +376,48 @@ function clock(seconds) {
 
 function openSettings() {
   fillSettings();
+  renderPlugins();
   document.getElementById('settings').hidden = false;
+}
+
+async function renderPlugins() {
+  const list = document.getElementById('plugins-list');
+
+  let plugins;
+  try {
+    plugins = await (await fetch('/api/plugins')).json();
+  } catch {
+    return;
+  }
+
+  if (!plugins.installed.length) {
+    const row = document.createElement('div');
+    row.className = 'dep';
+    row.append(document.createElement('i'));
+
+    const name = document.createElement('span');
+    name.textContent = 'none installed';
+    row.append(name);
+
+    list.replaceChildren(row);
+    return;
+  }
+
+  list.replaceChildren(...plugins.installed.map(file => {
+    const row = document.createElement('div');
+    const active = file === plugins.loaded;
+    row.className = 'dep' + (active ? ' ok' : '');
+
+    const name = document.createElement('span');
+    name.textContent = file;
+
+    const state = document.createElement('span');
+    state.className = 'path';
+    state.textContent = active ? 'active' : 'not loaded';
+
+    row.append(document.createElement('i'), name, state);
+    return row;
+  }));
 }
 
 function fillSettings() {
@@ -377,6 +429,8 @@ function fillSettings() {
   document.getElementById('set-token').value = settings.namedTunnelToken;
   document.getElementById('set-host').value = settings.namedTunnelHostname;
   document.getElementById('set-autotunnel').checked = settings.autoTunnel;
+  document.getElementById('set-dj-enabled').checked = settings.djAddonEnabled;
+  document.getElementById('set-dj-fade').value = settings.crossfadeSeconds;
 
   const resolution = settings.width + 'x' + settings.height;
   for (const radio of document.querySelectorAll('input[name="res"]')) {
@@ -394,6 +448,7 @@ function syncSettingLabels() {
   document.getElementById('lbl-vbr').textContent = document.getElementById('set-vbr').value + ' kbps';
   document.getElementById('lbl-abr').textContent = document.getElementById('set-abr').value + ' kbps';
   document.getElementById('lbl-fps').textContent = document.getElementById('set-fps').value + ' fps';
+  document.getElementById('lbl-dj-fade').textContent = document.getElementById('set-dj-fade').value + ' s';
 }
 
 function readSettings() {
@@ -411,7 +466,9 @@ function readSettings() {
     tunnelMode: (document.querySelector('input[name="tmode"]:checked') || {}).value || 'Quick',
     namedTunnelToken: document.getElementById('set-token').value.trim(),
     namedTunnelHostname: document.getElementById('set-host').value.trim(),
-    autoTunnel: document.getElementById('set-autotunnel').checked
+    autoTunnel: document.getElementById('set-autotunnel').checked,
+    djAddonEnabled: document.getElementById('set-dj-enabled').checked,
+    crossfadeSeconds: Number(document.getElementById('set-dj-fade').value)
   };
 }
 
@@ -496,7 +553,7 @@ document.getElementById('btn-deps').onclick = async () => {
   try { await post('/api/deps/refresh'); } catch { /* logged server-side */ }
 };
 
-for (const id of ['set-vbr', 'set-abr', 'set-fps']) {
+for (const id of ['set-vbr', 'set-abr', 'set-fps', 'set-dj-fade']) {
   document.getElementById(id).addEventListener('input', syncSettingLabels);
 }
 
@@ -533,6 +590,43 @@ document.querySelector('[data-tunnel-button]').addEventListener('click', async (
     await post(up ? '/api/tunnel/stop' : '/api/tunnel/start');
   } catch (error) {
     alert(error.message);
+  }
+});
+
+// The decks live in their own window (DjWindow); the host opens it.
+document.getElementById('btn-dj').onclick = () => toHost('openDj');
+
+document.getElementById('btn-plugin-install').addEventListener('click', async () => {
+  const input = document.getElementById('plugin-file');
+  const message = document.getElementById('plugin-message');
+  const file = input.files[0];
+
+  if (!file) {
+    message.textContent = 'Pick a .dll or .zip first.';
+    return;
+  }
+
+  const body = new FormData();
+  body.append('plugin', file);
+  message.textContent = 'Installing…';
+
+  try {
+    const response = await fetch('/api/plugins/install', { method: 'POST', body: body });
+    if (!response.ok) {
+      let detail = '';
+      try { detail = (await response.json()).detail || ''; } catch { /* no body */ }
+      throw new Error(detail || 'install failed');
+    }
+
+    const result = await response.json();
+    message.textContent = result.restartRequired
+      ? result.message + ' - restart StreaMuse to use it.'
+      : result.message + ' - active now.';
+
+    input.value = '';
+    renderPlugins();
+  } catch (error) {
+    message.textContent = 'Could not install: ' + error.message;
   }
 });
 

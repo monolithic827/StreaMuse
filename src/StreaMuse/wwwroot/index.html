@@ -50,6 +50,8 @@
         <path d="M12 2v2m0 16v2M4.9 4.9l1.5 1.5m11.2 11.2 1.5 1.5M2 12h2m16 0h2M4.9 19.1l1.5-1.5M17.6 6.4l1.5-1.5" />
       </svg>
     </button>
+    <button class="btn btn-secondary" id="btn-dj" title="DJ" hidden
+      style="font-size:12px;padding:4px 12px">DJ</button>
     <button class="btn btn-icon btn-secondary" id="btn-settings" aria-label="Settings" title="Settings">
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <path d="M20 7h-9M14 17H5" />
@@ -250,6 +252,31 @@
 
         <label class="radio"><input type="checkbox" id="set-autotunnel"><span class="dot"></span>Start the tunnel
           automatically with the stream</label>
+
+        <hr class="hr">
+
+        <div class="field">
+          <label>Plugins</label>
+          <div id="plugins-list" class="deps"></div>
+          <div style="display:flex;gap:var(--space-2);align-items:center;margin-top:var(--space-2)">
+            <input type="file" id="plugin-file" accept=".dll,.zip" style="flex:1;font-size:12px">
+            <button class="btn btn-secondary" id="btn-plugin-install"
+              style="flex:none;font-size:12px">Install plugin</button>
+          </div>
+          <p class="micro" id="plugin-message">A plugin runs as part of StreaMuse - only install ones you
+            trust.</p>
+        </div>
+
+        <div class="field">
+          <label>DJ addon</label>
+          <label class="radio"><input type="checkbox" id="set-dj-enabled"><span class="dot"></span>Enable DJ
+            mixing (needs a DJ plugin installed above)</label>
+        </div>
+
+        <div class="field">
+          <label>Crossfade - <span id="lbl-dj-fade">8 s</span></label>
+          <input class="input range" type="range" id="set-dj-fade" min="2" max="30" step="1">
+        </div>
 
         <hr class="hr">
 

@@ -35,6 +35,8 @@ internal static class Program
         Directory.CreateDirectory(Paths.ConfigDir);
         Directory.CreateDirectory(Paths.DataDir);
         Directory.CreateDirectory(Paths.HlsDir);
+        Directory.CreateDirectory(Paths.PluginsDir);
+        Directory.CreateDirectory(Paths.DjCacheDir);
 
         var controlPort = PortFinder.Pick(7788);
         var publicPort = PortFinder.Pick(7789);
@@ -45,12 +47,16 @@ internal static class Program
         var artwork = new ArtworkStore();
         var discovery = new DiscoveryService(settings, hub, artwork);
         var tunnel = new CloudflaredTunnel(settings, hub, deps, publicPort);
-        var pipeline = new StreamPipeline(settings, hub, deps, discovery, artwork, tunnel);
+
+        var djHost = new DjAddonHost();
+        djHost.TryLoad(BuildDjAddonContext(settings, deps, hub, djHost), hub);
+
+        var pipeline = new StreamPipeline(settings, hub, deps, discovery, artwork, tunnel, djHost);
 
         discovery.TargetChanged += pipeline.OnTargetChanged;
 
         var app = BuildWebApp(
-            args, settings, hub, deps, artwork, discovery, tunnel, pipeline, controlPort, publicPort);
+            args, settings, hub, deps, artwork, discovery, tunnel, pipeline, djHost, controlPort, publicPort);
 
         hub.SetLocalUrl(HlsEndpoint.LocalUrl(publicPort, settings.StreamKey));
 
@@ -68,6 +74,10 @@ internal static class Program
             try
             {
                 await deps.EnsureAllAsync(lifetime.Token);
+                if (djHost.Addon is not null && settings.DjAddonEnabled)
+                {
+                    await deps.EnsureYtDlpAsync(lifetime.Token);
+                }
             }
             catch (Exception ex)
             {
@@ -80,8 +90,24 @@ internal static class Program
         using var window = new MainWindow($"http://127.0.0.1:{controlPort}/", hub, settings);
         Application.Run(window);
 
-        Shutdown(lifetime, pipeline, app, hub);
+        Shutdown(lifetime, pipeline, djHost, app, hub);
     }
+
+    /// <summary>Bundles the paths/settings/callbacks a loaded addon needs. Built once at startup;
+    /// the Func fields let it keep reading live values (ffmpeg/yt-dlp may still be downloading).</summary>
+    private static Media.DjAddonContext BuildDjAddonContext(
+        AppSettings settings, DependencyManager deps, StateHub hub, DjAddonHost djHost) =>
+        new(
+            Capture.ProcessLoopbackCapture.SampleRate,
+            Capture.ProcessLoopbackCapture.Channels,
+            Paths.DjCacheDir,
+            () => deps.FfmpegPath,
+            () => deps.YtDlpPath,
+            message => hub.Log(LineLevel.Info, message),
+            message => hub.Log(LineLevel.Warn, message),
+            message => hub.Log(LineLevel.Error, message),
+            () => new Media.DjAddonSettings(settings.DjAddonEnabled, settings.CrossfadeSeconds),
+            () => hub.SetDj(djHost.Addon?.Snapshot()));
 
     /// <summary>
     /// Runs with the window already gone and nothing above it to catch anything, so a step that
@@ -91,11 +117,13 @@ internal static class Program
     private static void Shutdown(
         CancellationTokenSource lifetime,
         StreamPipeline pipeline,
+        DjAddonHost djHost,
         WebApplication app,
         StateHub hub)
     {
         Attempt(hub, "cancel background work", lifetime.Cancel);
         Attempt(hub, "stop the stream", () => pipeline.StopAsync().GetAwaiter().GetResult());
+        Attempt(hub, "shut down the DJ addon", djHost.Shutdown);
         Attempt(hub, "stop the web host",
             () => app.StopAsync(TimeSpan.FromSeconds(3)).GetAwaiter().GetResult());
     }
@@ -121,6 +149,7 @@ internal static class Program
         DiscoveryService discovery,
         CloudflaredTunnel tunnel,
         StreamPipeline pipeline,
+        DjAddonHost djHost,
         int controlPort,
         int publicPort)
     {
@@ -144,6 +173,7 @@ internal static class Program
         builder.Services.AddSingleton(discovery);
         builder.Services.AddSingleton(tunnel);
         builder.Services.AddSingleton(pipeline);
+        builder.Services.AddSingleton(djHost);
 
         var app = builder.Build();
 
