@@ -9,6 +9,10 @@ const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
 let state = null;
 let settings = null;
 let copiedUntil = 0;
+let copiedKind = '';
+
+// Both buttons copy the same stream URL; "Web" copies its directory, where the listener page is.
+const copyLabels = { hls: 'Copy', page: 'Web' };
 let socket = null;
 let reportedDetailsHeight = -1;
 let appliedTheme = '';
@@ -79,9 +83,9 @@ function buildView() {
     externalMode: source.source === 'external',
     codecLine: running ? 'AAC 48 kHz · captured' : (detected ? 'ready' : 'no stream'),
 
-    track: now.title,
-    artist: now.artist,
-    album: now.album,
+    track: now.title || 'Nothing playing',
+    artist: now.artist || '-',
+    album: now.album || '-',
     elapsed: clock(now.positionSeconds),
     duration: now.durationSeconds > 0 ? clock(now.durationSeconds) : '--:--',
     progressFill: { style: { width: progress + '%' } },
@@ -156,7 +160,9 @@ function render() {
     : 'Stop tunnel';
 
   for (const button of document.querySelectorAll('[data-copy]')) {
-    button.textContent = Date.now() < copiedUntil ? 'Copied' : 'Copy';
+    button.textContent = Date.now() < copiedUntil && button.dataset.copy === copiedKind
+      ? 'Copied'
+      : copyLabels[button.dataset.copy];
   }
 
   renderCover();
@@ -538,8 +544,10 @@ document.querySelector('[data-tunnel-button]').addEventListener('click', async (
 
 for (const button of document.querySelectorAll('[data-copy]')) {
   button.addEventListener('click', async () => {
-    const url = state.tunnel.publicUrl || state.localUrl || '';
+    const playlist = state.tunnel.publicUrl || state.localUrl || '';
+    const url = button.dataset.copy === 'page' ? playlist.replace(/index\.m3u8$/, '') : playlist;
     try { await navigator.clipboard.writeText(url); } catch { /* clipboard blocked */ }
+    copiedKind = button.dataset.copy;
     copiedUntil = Date.now() + 1600;
     render();
     setTimeout(render, 1700);

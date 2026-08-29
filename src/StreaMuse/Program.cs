@@ -152,7 +152,7 @@ internal static class Program
 
         app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(20) });
 
-        // Order matters: the public-port filter terminates, so nothing below it is tunnel-reachable.
+        app.MapListenerUi(publicPort, settings);
         app.MapPublicHls(publicPort, settings);
 
         app.MapControlApi(controlPort, publicPort);

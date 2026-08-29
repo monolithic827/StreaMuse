@@ -73,12 +73,65 @@ StreamPipeline:  ProcessLoopbackCapture ──> AudioPacer ─┐
 over the WebSocket; the panel is a pure view and only ever posts intents back (start/stop, settings).
 When adding UI data, put it in the snapshot rather than adding a poll endpoint.
 
-**Two Kestrel ports, and this is a security boundary.** The control API, WebSocket and UI live on
-the control port (7788). Only the public port (7789) is handed to cloudflared, and it serves
-*nothing* but `/live/{streamKey}/*.m3u8|.ts` - everything else 404s, including traversal attempts.
-Never widen what the public port serves, and never move an API onto it. Rejecting `/`, `\` and `..`
-is not enough on Windows: `Path.Combine` discards its first argument for a drive-relative name, so
-`C:seg.ts` would resolve against drive C's current directory. The name must also not be rooted.
+**Two Kestrel ports, and this is a security boundary.** The control API, WebSocket, settings and log
+live on the control port (7788) and must never appear on the other one. Only the public port (7789)
+is handed to cloudflared, and everything it serves sits under `/live/{streamKey}/`, is GET-only, and
+is one of: the HLS playlist and segments, the listener page's own files out of `wwwroot/listen/`,
+`now` (current track as JSON) and `art`. Everything else 404s, including traversal attempts.
+
+The public surface must never serialize `StateSnapshot`. That snapshot carries `NamedTunnelToken` -
+a Cloudflare credential - along with dependency paths that leak the Windows username, pids, process
+names and 200 log lines, and `StateHub.AcceptSocketAsync` sends all of it to any socket that
+connects. `ListenerEndpoint` therefore declares its own `PublicNowPlaying` record and builds it field
+by field, so a field added to the panel's state cannot become public by being adjacent to one. Title,
+artist, album and cover are already rendered into the video, which is why those are the ones it may
+carry - and only *while the video exists*. The tunnel's lifetime is independent of the encoder's
+(separate buttons, plus `AutoTunnel`), so with the stream stopped `now` answers a fixed off-air
+record and `art` 404s; otherwise anyone holding the hostname could poll what the machine plays
+locally. Do not move that gate into the page: `StreamKey` defaults to a constant, so the URL is not
+a secret either.
+
+Nothing on the wire carries a display placeholder. `NowPlaying` holds `""` for a field the source
+did not report, and each of the three views - the panel, the video, the listener page - supplies its
+own text. A sentinel like `"Nothing playing"` reaching the browser makes a panel-only string into
+something the listener page has to string-match, and renaming it there would silently show it as a
+track title.
+
+Both public handlers share `HlsEndpoint.IsSafeName`, and it must stay shared. Rejecting `/`, `\` and
+`..` is not enough on Windows: `Path.Combine` discards its first argument for a drive-relative name,
+so `C:seg.ts` would resolve against drive C's current directory. The name must also not be rooted.
+The listener's asset lookup is additionally confined to the `listen/` subtree and to
+`.html`/`.css`/`.js`, or the control panel's own `index.html` and `app.js` - siblings in the same
+embedded provider - would be reachable through the tunnel. `art` is the one public body whose type
+is *guessed* - `ContentTypeOf` sniffs bytes a third-party app handed to SMTC and falls back to
+`application/octet-stream` - so it is sent `nosniff`; it is same-origin with the page out there.
+
+`ListenerEndpoint` is mapped before `MapPublicHls` because that one terminates for the public port
+and never calls `next()`. It passes anything it does not own through to that 404.
+
+Both public handlers answer HEAD as well as GET. A page link gets pasted into chat apps whose
+unfurlers probe with HEAD first, and a HEAD that 404s where GET returns 200 makes the link look dead.
+`ListenerEndpoint.SendAsync` is what keeps the two identical: it sets `ContentLength` from the body
+either way and returns before writing it for HEAD. Widening the accepted methods does not widen the
+surface - the route allowlist runs first - but re-check the 404 matrix under both methods if it
+changes again.
+
+**Cloudflare overrides `Cache-Control` on `.css` and `.js`.** Measured through the named tunnel, a
+`no-cache` on those came back to the client as `max-age=14400`, so a response header cannot be relied
+on to retire an asset: after a rebuild, listeners would run the previous build's script against this
+build's feed for up to four hours. The page therefore names its assets `listen.css?v={v}` /
+`listen.js?v={v}`, `ListenerEndpoint` substitutes a hash of their bytes into the page as it serves
+it, and the assets are sent `immutable`. Only the page itself is `no-cache`, and it is `.html`, which
+Cloudflare leaves as `DYNAMIC`. Bust by URL here, never by header.
+
+`ArtworkStore.Version` is a 63-bit long, so it goes to the listener page as a **string**: through
+JSON a number past 2^53 is rounded by `JSON.parse` and the `art?v=` that comes back is not the
+version the host sent. That endpoint compares `v` against the current version and serves `immutable`
+only when they agree, `no-store` when they do not - the cover can change between the poll that named
+a version and the fetch for it, and caching those bytes under the old key pins the wrong cover for a
+year (the panel has the same shape, but it is push-driven over loopback, so its window is
+milliseconds). The comparison is only sound because `ArtworkStore.Current` reads version and bytes
+under one lock. The panel still receives the version as a number: nothing validates it there.
 
 ## Invariants that are easy to break
 

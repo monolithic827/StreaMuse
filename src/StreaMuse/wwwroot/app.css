@@ -378,14 +378,6 @@ body {
   background: var(--color-surface);
 }
 
-.url-kind {
-  flex: none;
-  font-size: 10px;
-  letter-spacing: .1em;
-  text-transform: uppercase;
-  color: color-mix(in srgb, var(--color-text) 45%, transparent);
-}
-
 .url-text {
   flex: 1;
   min-width: 0;
