@@ -43,7 +43,7 @@ public static class ControlApi
             if (bytes is null || bytes.Length == 0) return Results.NotFound();
 
             ctx.Response.Headers.CacheControl = "public, max-age=31536000, immutable";
-            return Results.File(bytes, SniffImageType(bytes));
+            return Results.File(bytes, ArtworkStore.ContentTypeOf(bytes));
         });
 
         app.MapPost("/api/settings", async (HttpContext ctx) =>
@@ -98,16 +98,6 @@ public static class ControlApi
             using var socket = await ctx.WebSockets.AcceptWebSocketAsync();
             await hub.AcceptSocketAsync(socket, ctx.RequestAborted);
         });
-    }
-
-    /// <summary>SMTC hands back whatever the app supplied, so the type has to come from the bytes.</summary>
-    private static string SniffImageType(byte[] bytes)
-    {
-        if (bytes.Length >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF) return "image/jpeg";
-        if (bytes.Length >= 8 && bytes[0] == 0x89 && bytes[1] == 0x50) return "image/png";
-        if (bytes.Length >= 12 && bytes[8] == 'W' && bytes[9] == 'E') return "image/webp";
-        if (bytes.Length >= 6 && bytes[0] == 'G' && bytes[1] == 'I') return "image/gif";
-        return "application/octet-stream";
     }
 
     /// <summary>Copies incoming values onto the live settings instance shared across the app.</summary>

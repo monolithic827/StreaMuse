@@ -153,6 +153,9 @@ internal static class Program
         app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(20) });
 
         // Order matters: the public-port filter terminates, so nothing below it is tunnel-reachable.
+        // The listener UI has to go above it to be reachable at all; it passes anything it does not
+        // own straight through to the 404 below.
+        app.MapListenerUi(publicPort, settings);
         app.MapPublicHls(publicPort, settings);
 
         app.MapControlApi(controlPort, publicPort);

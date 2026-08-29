@@ -10,6 +10,15 @@ public static class HlsEndpoint
     public static string LocalUrl(int publicPort, string streamKey) =>
         $"http://127.0.0.1:{publicPort}/live/{streamKey}/index.m3u8";
 
+    /// <summary>The single name rule for everything the public port serves. Rejecting / and \ is not
+    /// enough: Path.Combine discards its first argument for a drive-relative name, so C:seg.ts would
+    /// resolve against drive C's current directory. Shared with ListenerEndpoint so the two cannot
+    /// drift apart.</summary>
+    internal static bool IsSafeName(string name) =>
+        name.Length > 0 &&
+        !name.Contains('/') && !name.Contains('\\') && !name.Contains("..") &&
+        !Path.IsPathRooted(name);
+
     public static void MapPublicHls(this WebApplication app, int publicPort, AppSettings settings)
     {
         app.Use(async (ctx, next) =>
@@ -38,12 +47,7 @@ public static class HlsEndpoint
         if (!path.StartsWith(expectedPrefix, StringComparison.Ordinal)) return false;
 
         var name = path[expectedPrefix.Length..];
-
-        if (name.Length == 0 || name.Contains('/') || name.Contains('\\') || name.Contains("..") ||
-            Path.IsPathRooted(name))
-        {
-            return false;
-        }
+        if (!IsSafeName(name)) return false;
 
         var isPlaylist = name.EndsWith(".m3u8", StringComparison.OrdinalIgnoreCase);
         var isSegment = name.EndsWith(".ts", StringComparison.OrdinalIgnoreCase);
