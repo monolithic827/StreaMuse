@@ -10,10 +10,8 @@ public static class HlsEndpoint
     public static string LocalUrl(int publicPort, string streamKey) =>
         $"http://127.0.0.1:{publicPort}/live/{streamKey}/index.m3u8";
 
-    /// <summary>The single name rule for everything the public port serves. Rejecting / and \ is not
-    /// enough: Path.Combine discards its first argument for a drive-relative name, so C:seg.ts would
-    /// resolve against drive C's current directory. Shared with ListenerEndpoint so the two cannot
-    /// drift apart.</summary>
+    /// <summary>The single name rule for everything the public port serves; shared with
+    /// ListenerEndpoint so the two cannot drift apart. See CLAUDE.md.</summary>
     internal static bool IsSafeName(string name) =>
         name.Length > 0 &&
         !name.Contains('/') && !name.Contains('\\') && !name.Contains("..") &&

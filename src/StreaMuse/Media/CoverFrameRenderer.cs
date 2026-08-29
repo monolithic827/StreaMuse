@@ -128,7 +128,8 @@ public sealed class CoverFrameRenderer(AppSettings settings, ArtworkStore artwor
 
         var y = artBox.Top + height * 0.10f;
 
-        canvas.DrawText(Ellipsize(now.Title, titleFont, available), left, y, SKTextAlign.Left, titleFont, bright);
+        var title = now.Title.Length > 0 ? now.Title : "Nothing playing";
+        canvas.DrawText(Ellipsize(title, titleFont, available), left, y, SKTextAlign.Left, titleFont, bright);
         y += height * 0.085f;
 
         canvas.DrawText(Ellipsize(now.Artist, bodyFont, available), left, y, SKTextAlign.Left, bodyFont, muted);

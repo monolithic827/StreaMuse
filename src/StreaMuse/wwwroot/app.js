@@ -83,9 +83,9 @@ function buildView() {
     externalMode: source.source === 'external',
     codecLine: running ? 'AAC 48 kHz · captured' : (detected ? 'ready' : 'no stream'),
 
-    track: now.title,
-    artist: now.artist,
-    album: now.album,
+    track: now.title || 'Nothing playing',
+    artist: now.artist || '-',
+    album: now.album || '-',
     elapsed: clock(now.positionSeconds),
     duration: now.durationSeconds > 0 ? clock(now.durationSeconds) : '--:--',
     progressFill: { style: { width: progress + '%' } },

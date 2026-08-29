@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -8,23 +9,25 @@ using StreaMuse.State;
 
 namespace StreaMuse.Web;
 
-/// <summary>
-/// The listener page and its now-playing feed, served through the tunnel beside the playlist.
-/// GET-only, and it must never serialize StateSnapshot: that carries the tunnel token, local paths,
-/// pids and the log. Everything here is built from a record declared below instead, so a field added
-/// to the panel's state cannot become public by accident. See CLAUDE.md.
-/// </summary>
+/// <summary>The listener page and its now-playing feed, served through the tunnel beside the
+/// playlist. See CLAUDE.md before adding anything here.</summary>
 public static class ListenerEndpoint
 {
-    private static readonly string[] AssetExtensions = [".html", ".css", ".js"];
+    /// <summary>The only files this port will serve, and the type each is sent as.</summary>
+    private static readonly Dictionary<string, string> AssetTypes = new()
+    {
+        [".html"] = "text/html; charset=utf-8",
+        [".css"] = "text/css; charset=utf-8",
+        [".js"] = "text/javascript; charset=utf-8"
+    };
 
     /// <summary>The files the page names with a version; the page itself is not one of them.</summary>
     private static readonly string[] AssetNames = ["listen.css", "listen.js"];
 
     private static string? _assetVersion;
 
-    /// <summary>Everything the outside world is told. Title, artist, album and cover are already
-    /// rendered into the video, so this adds no information a listener does not have.</summary>
+    /// <summary>Everything the outside world is told, and only while the stream is running - the
+    /// tunnel outlives the encoder, so a stopped stream must report nothing.</summary>
     private sealed record PublicNowPlaying(
         string Title,
         string Artist,
@@ -32,11 +35,11 @@ public static class ListenerEndpoint
         bool Playing,
         double PositionSeconds,
         double DurationSeconds,
-        long ArtworkVersion,
+        string ArtworkVersion,
         bool Live);
 
-    /// <summary>Must be mapped before MapPublicHls, which terminates for this port. Anything not
-    /// handled here falls through to it and 404s.</summary>
+    private static readonly PublicNowPlaying OffAir = new("", "", "", false, 0, 0, "0", false);
+
     public static void MapListenerUi(this WebApplication app, int publicPort, AppSettings settings)
     {
         var hub = app.Services.GetRequiredService<StateHub>();
@@ -77,7 +80,7 @@ public static class ListenerEndpoint
             {
                 "" => await ServeAssetAsync(ctx, files, "listen.html"),
                 "now" => await ServeNowAsync(ctx, hub),
-                "art" => await ServeArtAsync(ctx, artwork),
+                "art" => await ServeArtAsync(ctx, hub, artwork),
                 _ => await ServeAssetAsync(ctx, files, name)
             };
 
@@ -85,14 +88,14 @@ public static class ListenerEndpoint
         });
     }
 
-    /// <summary>Serves the page's own files only. The lookup is confined to the listen/ subtree, so
-    /// the control panel's index.html and app.js next to it stay unreachable from this port.</summary>
+    private static bool IsLive(StateHub hub) => hub.Encoder.Status == StreamStatus.Running;
+
     private static async Task<bool> ServeAssetAsync(HttpContext ctx, IFileProvider files, string name)
     {
         if (!HlsEndpoint.IsSafeName(name)) return false;
 
         var extension = Path.GetExtension(name).ToLowerInvariant();
-        if (!AssetExtensions.Contains(extension)) return false;
+        if (!AssetTypes.TryGetValue(extension, out var contentType)) return false;
 
         var file = files.GetFileInfo($"listen/{name}");
         if (!file.Exists) return false;
@@ -107,16 +110,7 @@ public static class ListenerEndpoint
                 Encoding.UTF8.GetString(body).Replace("{v}", AssetVersion(files), StringComparison.Ordinal));
         }
 
-        ctx.Response.ContentType = extension switch
-        {
-            ".html" => "text/html; charset=utf-8",
-            ".css" => "text/css; charset=utf-8",
-            _ => "text/javascript; charset=utf-8"
-        };
-
-        // The page must be revalidated to hand out current asset URLs; the assets it names carry a
-        // version in the URL, so they can be held forever. Cloudflare rewrites a no-cache on .css
-        // and .js to its own 4h TTL, which is why busting by URL is the only thing that works here.
+        ctx.Response.ContentType = contentType;
         ctx.Response.Headers.CacheControl = isPage
             ? "no-cache"
             : "public, max-age=31536000, immutable";
@@ -138,14 +132,12 @@ public static class ListenerEndpoint
     {
         if (_assetVersion is not null) return _assetVersion;
 
-        var bytes = new List<byte>();
-        foreach (var name in AssetNames) bytes.AddRange(Read(files.GetFileInfo($"listen/{name}")));
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        foreach (var name in AssetNames) hash.AppendData(Read(files.GetFileInfo($"listen/{name}")));
 
-        return _assetVersion = Convert.ToHexString(SHA256.HashData(bytes.ToArray()).AsSpan(0, 6));
+        return _assetVersion = Convert.ToHexString(hash.GetHashAndReset().AsSpan(0, 6));
     }
 
-    /// <summary>HEAD must answer exactly as GET does minus the body, or a link shared into a chat
-    /// app whose unfurler probes with HEAD looks dead.</summary>
     private static async Task<bool> SendAsync(HttpContext ctx, byte[] body)
     {
         ctx.Response.ContentLength = body.Length;
@@ -160,15 +152,17 @@ public static class ListenerEndpoint
     {
         var now = hub.NowPlaying;
 
-        var payload = new PublicNowPlaying(
-            now.Title,
-            now.Artist,
-            now.Album,
-            now.Playing,
-            now.PositionSeconds,
-            now.DurationSeconds,
-            now.ArtworkVersion,
-            hub.Encoder.Status == StreamStatus.Running);
+        var payload = IsLive(hub)
+            ? new PublicNowPlaying(
+                now.Title,
+                now.Artist,
+                now.Album,
+                now.Playing,
+                now.PositionSeconds,
+                now.DurationSeconds,
+                now.ArtworkVersion.ToString(CultureInfo.InvariantCulture),
+                true)
+            : OffAir;
 
         ctx.Response.ContentType = "application/json; charset=utf-8";
         ctx.Response.Headers.CacheControl = "no-store";
@@ -176,15 +170,23 @@ public static class ListenerEndpoint
         return await SendAsync(ctx, JsonSerializer.SerializeToUtf8Bytes(payload, StateHub.Json));
     }
 
-    /// <summary>Cached forever against ArtworkStore's content-derived version, exactly as the panel's
-    /// /api/art is. See CLAUDE.md on why that key must not become a counter.</summary>
-    private static async Task<bool> ServeArtAsync(HttpContext ctx, ArtworkStore artwork)
+    private static async Task<bool> ServeArtAsync(HttpContext ctx, StateHub hub, ArtworkStore artwork)
     {
-        var bytes = artwork.Bytes;
+        if (!IsLive(hub)) return false;
+
+        var (version, bytes) = artwork.Current;
         if (bytes is null || bytes.Length == 0) return false;
 
         ctx.Response.ContentType = ArtworkStore.ContentTypeOf(bytes);
-        ctx.Response.Headers.CacheControl = "public, max-age=31536000, immutable";
+        ctx.Response.Headers.XContentTypeOptions = "nosniff";
+
+        // The cover can change between the poll that named a version and the fetch for it, and these
+        // bytes are then not the ones that URL stands for. Caching them under it would outlive the
+        // track by a year.
+        ctx.Response.Headers.CacheControl =
+            ctx.Request.Query["v"] == version.ToString(CultureInfo.InvariantCulture)
+                ? "public, max-age=31536000, immutable"
+                : "no-store";
 
         return await SendAsync(ctx, bytes);
     }

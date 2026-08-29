@@ -24,11 +24,9 @@ const el = {
 let track = null;
 let receivedAt = 0;
 let lastPoll = 0;
-let artVersion = -1;
+let polling = false;
+let artVersion = null;
 let reachable = false;
-
-// The host writes "-" for a field it has nothing for, and "Nothing playing" for no track at all.
-const value = (text) => (text && text !== '-' ? text : '');
 
 function time(seconds) {
   if (!(seconds > 0)) return '0:00';
@@ -45,11 +43,13 @@ function position() {
   return track.durationSeconds > 0 ? Math.min(advanced, track.durationSeconds) : advanced;
 }
 
+/* The version is a string: it is a 63-bit hash, and JSON.parse rounds one past 2^53 into a number
+   the host would not recognise as its own. */
 function renderArt(version) {
   if (version === artVersion) return;
   artVersion = version;
 
-  if (version > 0) {
+  if (version !== '0') {
     el.cover.src = `art?v=${version}`;
     el.cover.hidden = false;
     el.artEmpty.hidden = true;
@@ -61,8 +61,10 @@ function renderArt(version) {
   el.artEmpty.hidden = false;
 }
 
-// The cover can change between the poll that reported a version and the fetch for it.
+// Clearing the version is what lets the next poll retry: a dropped request would otherwise leave
+// "No artwork" until the cover itself changes.
 el.cover.addEventListener('error', () => {
+  artVersion = null;
   el.cover.hidden = true;
   el.artEmpty.hidden = false;
 });
@@ -88,30 +90,32 @@ function render() {
   el.statusText.textContent = !reachable ? 'Unreachable' : live ? 'Live' : 'Off air';
 
   if (!live) {
-    // Metadata may still be arriving while the stream is stopped, but there is nothing to hear -
-    // showing the track would tell a listener something is playing for them when it is not.
     el.eyebrow.textContent = reachable ? 'Nothing streaming' : 'Lost contact';
     el.title.textContent = reachable ? 'Off air' : 'Trying to reconnect…';
     el.artist.textContent = '';
     el.album.textContent = '';
-    renderArt(0);
+    renderArt('0');
     renderProgress();
     return;
   }
 
-  const title = value(track.title) && track.title !== 'Nothing playing' ? track.title : '';
+  const title = track.title;
 
   el.eyebrow.textContent = title ? 'Now playing' : 'On air';
   el.title.textContent = title || 'No track info';
-  el.artist.textContent = title ? value(track.artist) : '';
-  el.album.textContent = title ? value(track.album) : '';
+  el.artist.textContent = title ? track.artist : '';
+  el.album.textContent = title ? track.album : '';
 
   renderArt(track.artworkVersion);
   renderProgress();
 }
 
+/* One at a time, and the interval is counted from the response: a request slower than POLL_MS would
+   otherwise have a second one started under it, and the two can land out of order - stamping stale
+   fields with a fresh receivedAt, which walks the progress bar backwards. */
 async function poll() {
-  lastPoll = Date.now();
+  if (polling) return;
+  polling = true;
 
   try {
     const response = await fetch('now', { cache: 'no-store' });
@@ -122,6 +126,9 @@ async function poll() {
     reachable = true;
   } catch {
     reachable = false;
+  } finally {
+    polling = false;
+    lastPoll = Date.now();
   }
 
   render();

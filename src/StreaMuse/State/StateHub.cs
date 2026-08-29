@@ -33,7 +33,7 @@ public sealed class StateHub
     }
 
     private SourceState _source = new("external", false, null, 0, "Looking for a source…", [], []);
-    private NowPlaying _nowPlaying = new("Nothing playing", "-", "-", false, 0, 0, 0);
+    private NowPlaying _nowPlaying = new("", "", "", false, 0, 0, 0);
     private EncoderState _encoder = new(StreamStatus.Idle, 0, 0, 0, 0, null);
     private TunnelState _tunnel = new(TunnelStatus.Off, null, null);
     private IReadOnlyList<DependencyView> _deps = [];

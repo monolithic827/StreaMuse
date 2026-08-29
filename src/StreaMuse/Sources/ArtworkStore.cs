@@ -14,6 +14,10 @@ public sealed class ArtworkStore
 
     public byte[]? Bytes { get { lock (_sync) return _bytes; } }
 
+    /// <summary>Both together, for a caller that caches the bytes under the version: read apart, a
+    /// track change between them pins one cover under the other's key.</summary>
+    public (long Version, byte[]? Bytes) Current { get { lock (_sync) return (_version, _bytes); } }
+
     /// <summary>Returns true when the artwork actually changed.</summary>
     public bool Set(byte[]? bytes)
     {
