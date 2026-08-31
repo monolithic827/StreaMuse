@@ -62,6 +62,10 @@ public sealed class AppSettings
 
     public double CrossfadeSeconds { get; set; } = 8;
 
+    /// <summary>Off by default: an unrequested air horn on a live stream is a worse first impression
+    /// than a quiet one - see CLAUDE.md.</summary>
+    public bool DjSfxEnabled { get; set; }
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
@@ -135,6 +139,10 @@ public static class Paths
     /// <summary>Where DjAddonHost looks for StreaMuse.DjAddon.dll.</summary>
     public static string PluginsDir { get; } = Path.Combine(DataDir, "plugins");
 
-    /// <summary>Scratch space for the DJ addon's downloaded/decoded/time-stretched audio.</summary>
+    /// <summary>Scratch space for the DJ addon's downloaded/decoded audio.</summary>
     public static string DjCacheDir { get; } = Path.Combine(DataDir, "dj-cache");
+
+    /// <summary>Drop-in library the DJ addon picks sound effects from at random. Unlike DjCacheDir,
+    /// this is a library the user maintains, not scratch space the app owns.</summary>
+    public static string DjSfxDir { get; } = Path.Combine(DataDir, "dj-sfx");
 }

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using StreaMuse.DjAddon.Audio;
 
 namespace StreaMuse.DjAddon.Fetch;
 
@@ -35,15 +36,9 @@ public static class YtDlpFetcher
 
         if (downloaded is null) throw new InvalidOperationException("yt-dlp did not produce an audio file");
 
-        var rawPath = Path.Combine(cacheDir, id + ".raw");
         try
         {
-            await DecodeToPcmAsync(ffmpegPath, downloaded, rawPath, sampleRate, channels, ct);
-
-            var bytes = await File.ReadAllBytesAsync(rawPath, ct);
-            var pcm = new float[bytes.Length / sizeof(float)];
-            Buffer.BlockCopy(bytes, 0, pcm, 0, pcm.Length * sizeof(float));
-
+            var pcm = await AudioDecoder.DecodeAsync(ffmpegPath, downloaded, sampleRate, channels, ct);
             var artwork = await DownloadArtworkAsync(tags.ThumbnailUrl, ct);
 
             return new Track(tags.Title, tags.Artist, tags.Album, tags.Duration, artwork, pcm);
@@ -51,7 +46,6 @@ public static class YtDlpFetcher
         finally
         {
             TryDelete(downloaded);
-            TryDelete(rawPath);
         }
     }
 
@@ -132,34 +126,6 @@ public static class YtDlpFetcher
         {
             return null;
         }
-    }
-
-    private static async Task DecodeToPcmAsync(
-        string ffmpegPath, string input, string output, int sampleRate, int channels, CancellationToken ct)
-    {
-        var psi = new ProcessStartInfo(ffmpegPath)
-        {
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-
-        foreach (var arg in new[]
-        {
-            "-y", "-i", input,
-            "-ar", sampleRate.ToString(CultureInfo.InvariantCulture),
-            "-ac", channels.ToString(CultureInfo.InvariantCulture),
-            "-f", "f32le", output
-        })
-        {
-            psi.ArgumentList.Add(arg);
-        }
-
-        using var process = Process.Start(psi) ?? throw new InvalidOperationException("could not start ffmpeg");
-        var stderr = await process.StandardError.ReadToEndAsync(ct);
-        await process.WaitForExitAsync(ct);
-
-        if (process.ExitCode != 0) throw new InvalidOperationException($"ffmpeg decode failed: {stderr.Trim()}");
     }
 
     private static void TryDelete(string? path)

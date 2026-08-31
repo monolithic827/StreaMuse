@@ -213,6 +213,7 @@ public static class ControlApi
         target.Theme = source.Theme;
         target.DjAddonEnabled = source.DjAddonEnabled;
         target.CrossfadeSeconds = source.CrossfadeSeconds;
+        target.DjSfxEnabled = source.DjSfxEnabled;
     }
 
     private sealed record DjRequestBody(string? Query);

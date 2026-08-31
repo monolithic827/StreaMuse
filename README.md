@@ -121,8 +121,24 @@ does a plain fade instead of forcing a swap that would land wrong. Very fast mat
 is a known gap: it reads the half- or third-time and declines, so hardcore and drum-and-bass will fade
 rather than mix.
 
+A track also doesn't just start playing from the top. It's cued in from wherever its groove actually
+locks into a steady beat - skipping past a sparse or free-tempo intro - the same thing a DJ does by ear
+before dropping a record in.
+
 The requested track plays on its own clock, so it keeps going even when the app you're capturing is
 silent - which is the usual case when you just want to play a request into a quiet stream.
+
+**With Apple Music or Spotify as the source**, the plugin pauses the app once a request has fully
+taken over - it isn't contributing any audio at that point anyway - and resumes it as soon as it knows
+nothing else is queued, so the app is playing again in time for its own outro. This has only been
+checked for the safe case (every other source correctly leaves the app alone); the actual pause/resume
+commands haven't been exercised against a real Spotify or Apple Music session.
+
+**Sound effects**: drop audio files into `%LOCALAPPDATA%\StreaMuse\dj-sfx\` and, with **Sound effects**
+ticked on in Settings, the plugin occasionally picks one at random and mixes it in right on the beat of
+a transition - an accent, not a constant thing. Nothing to name or configure per file; it just picks
+from whatever's in the folder. There's nothing in that folder by default - it only plays what you put
+there yourself.
 
 ## Diagnostics
 

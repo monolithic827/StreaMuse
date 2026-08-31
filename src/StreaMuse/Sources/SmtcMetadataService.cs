@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices.WindowsRuntime;
 using StreaMuse.State;
+using Windows.Foundation;
 using Windows.Media.Control;
 using Windows.Storage.Streams;
 
@@ -33,6 +34,35 @@ public sealed class SmtcMetadataService(StateHub hub)
             return false;
         }
     });
+
+    /// <summary>Sends a transport command to whichever session belongs to <paramref name="processId"/>
+    /// - the same <see cref="ProcessIdentity.Matches"/> match metadata reads use, so a command can
+    /// never land on the wrong app's session. False if there is no such session, the app declined the
+    /// command (some apps refuse remote control while their own window has focus), or the call itself
+    /// threw. Every SMTC call runs on <see cref="MediaThread"/>; see CLAUDE.md.</summary>
+    public Task<bool> TryPauseAsync(int processId) => SendCommandAsync(processId, s => s.TryPauseAsync());
+
+    public Task<bool> TryPlayAsync(int processId) => SendCommandAsync(processId, s => s.TryPlayAsync());
+
+    private Task<bool> SendCommandAsync(
+        int processId,
+        Func<GlobalSystemMediaTransportControlsSession, IAsyncOperation<bool>> command) =>
+        _thread.RunAsync(async () =>
+        {
+            if (_manager is null) return false;
+
+            try
+            {
+                var session = _manager.GetSessions()
+                    .FirstOrDefault(s => ProcessIdentity.Matches(processId, s.SourceAppUserModelId ?? ""));
+
+                return session is not null && await command(session);
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        });
 
     public Task<IReadOnlyList<SmtcSession>> ReadAllAsync(bool includeArtwork) =>
         _thread.RunAsync<IReadOnlyList<SmtcSession>>(async () =>

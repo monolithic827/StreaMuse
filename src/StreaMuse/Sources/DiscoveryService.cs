@@ -24,6 +24,22 @@ public sealed class DiscoveryService(
 
     public event Action<ResolvedSource>? TargetChanged;
 
+    /// <summary>Pauses whichever app is currently captured, but only for Apple Music and Spotify -
+    /// the two sources that mean a specific desktop app rather than an arbitrary picked process (see
+    /// CLAUDE.md on why External never identifies a source with certainty). Pausing an arbitrary
+    /// External target could stop something that has nothing to do with music.</summary>
+    public Task<bool> TryPauseSourceAsync() => IsControllable(out var pid) ? _smtc.TryPauseAsync(pid) : NotSupported;
+
+    public Task<bool> TryResumeSourceAsync() => IsControllable(out var pid) ? _smtc.TryPlayAsync(pid) : NotSupported;
+
+    private static readonly Task<bool> NotSupported = Task.FromResult(false);
+
+    private bool IsControllable(out int processId)
+    {
+        processId = _current.CaptureProcessId;
+        return _current.Detected && _current.EffectiveSource is MusicSource.Apple or MusicSource.Spotify;
+    }
+
     public async Task RunAsync(CancellationToken ct)
     {
         await _smtc.InitializeAsync();

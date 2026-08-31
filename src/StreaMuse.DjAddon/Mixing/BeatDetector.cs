@@ -27,13 +27,22 @@ public static class BeatDetector
     /// <summary>How far a gap may sit from a whole number of periods and still count as on the grid.</summary>
     private const double GridTolerance = 0.12;
 
+    /// <summary>Beats have to run steadily for this many in a row before a position counts as the
+    /// track's actual groove rather than one lucky coincidence in a sparse intro or a fill. Two bars
+    /// of 4/4 - long enough to rule out a stray aligned beat, short enough not to reject a track whose
+    /// intro is only a little uneven before it settles.</summary>
+    private const int MixInWindowBeats = 8;
+
     /// <summary><see cref="PhaseFrames"/> is the offset from the start of the analysed buffer to the
     /// first beat and <see cref="PeriodFrames"/> the spacing between beats. <see cref="LastBeatFrames"/>
     /// is the most recent beat: live scheduling must anchor on it rather than extrapolate from the
     /// first, which multiplies any period error by every beat in the window - measured at ~50 ms out
-    /// over 20s with the old detector, audible as a flam rather than one kick.</summary>
+    /// over 20s with the old detector, audible as a flam rather than one kick. <see cref="MixInFrames"/>
+    /// is a different beat entirely - the first one that begins a steady run, which is where a track
+    /// actually gets cued in, not necessarily where it happens to start. It is always an exact beat on
+    /// this same grid, never an arbitrary timestamp, so entering there does not break phase alignment.</summary>
     public sealed record Grid(
-        double Bpm, double Confidence, long PhaseFrames, long PeriodFrames, long LastBeatFrames);
+        double Bpm, double Confidence, long PhaseFrames, long PeriodFrames, long LastBeatFrames, long MixInFrames);
 
     public static (double Bpm, double Confidence) Analyze(float[] interleavedStereo, int sampleRate)
     {
@@ -65,28 +74,30 @@ public static class BeatDetector
         var bpm = detect.GetBpm();
         if (bpm <= 0) return Empty;
 
-        var (first, last, confidence, period) = ReadBeats(detect, sampleRate, 60.0 / bpm);
+        var (first, last, confidence, period, mixIn) = ReadBeats(detect, sampleRate, 60.0 / bpm);
         if (period <= 0) return Empty;
 
-        return new Grid(60.0 / period, confidence, first, (long)Math.Round(period * sampleRate), last);
+        return new Grid(
+            60.0 / period, confidence, first, (long)Math.Round(period * sampleRate), last, mixIn);
     }
 
     /// <summary>Pulls the beat list out and reduces it to what a transition needs: the first and last
-    /// beat worth landing on, and how strongly the track carries a beat at all.</summary>
-    private static (long First, long Last, double Confidence, double Period) ReadBeats(
+    /// beat worth landing on, how strongly the track carries a beat at all, and where its groove
+    /// actually locks in.</summary>
+    private static (long First, long Last, double Confidence, double Period, long MixIn) ReadBeats(
         BpmDetect detect, int sampleRate, double periodSeconds)
     {
         var count = detect.GetBeats(Span<float>.Empty, Span<float>.Empty);
-        if (count <= 0) return (0, 0, 0, 0);
+        if (count <= 0) return (0, 0, 0, 0, 0);
 
         var positions = new float[count];
         var strengths = new float[count];
         count = detect.GetBeats(positions, strengths);
-        if (count <= 0) return (0, 0, 0, 0);
+        if (count <= 0) return (0, 0, 0, 0, 0);
 
         var strongest = 0f;
         for (var i = 0; i < count; i++) strongest = Math.Max(strongest, strengths[i]);
-        if (strongest <= 0) return (0, 0, 0, 0);
+        if (strongest <= 0) return (0, 0, 0, 0, 0);
 
         // Positions come back in seconds.
         var beats = new List<double>();
@@ -95,12 +106,46 @@ public static class BeatDetector
             if (strengths[i] >= strongest * WeakBeat) beats.Add(positions[i]);
         }
 
-        if (beats.Count < MinimumBeats) return (0, 0, 0, 0);
+        if (beats.Count < MinimumBeats) return (0, 0, 0, 0, 0);
 
         var first = (long)Math.Round(beats[0] * sampleRate);
         var last = (long)Math.Round(beats[^1] * sampleRate);
+        var period = RefinePeriod(beats, periodSeconds);
+        var mixIn = (long)Math.Round(FindMixIn(beats, period) * sampleRate);
 
-        return (first, last, Regularity(beats, periodSeconds), RefinePeriod(beats, periodSeconds));
+        return (first, last, Regularity(beats, periodSeconds), period, mixIn);
+    }
+
+    /// <summary>The first beat that begins a run of <see cref="MixInWindowBeats"/> consecutive
+    /// well-spaced beats. A DJ does not cue a record from wherever it happens to start - they find
+    /// where the groove has actually locked in, skipping past a sparse or free-tempo intro. Falls back
+    /// to the very first beat when the track never holds a steady run that long (ambient openings,
+    /// rubato passages) - entering there is still better than nothing.</summary>
+    private static double FindMixIn(List<double> beats, double period)
+    {
+        if (beats.Count == 0) return 0;
+        if (period <= 0) return beats[0];
+
+        for (var start = 0; start <= beats.Count - MixInWindowBeats; start++)
+        {
+            var steady = true;
+
+            for (var i = start + 1; i < start + MixInWindowBeats; i++)
+            {
+                var periods = (beats[i] - beats[i - 1]) / period;
+                var nearest = Math.Round(periods);
+
+                if (nearest < 1 || Math.Abs(periods - nearest) / nearest > GridTolerance)
+                {
+                    steady = false;
+                    break;
+                }
+            }
+
+            if (steady) return beats[start];
+        }
+
+        return beats[0];
     }
 
     /// <summary>Least-squares period through the detected beats, rather than 60/GetBpm.
@@ -164,5 +209,5 @@ public static class BeatDetector
         return onGrid / (double)(beats.Count - 1);
     }
 
-    private static Grid Empty => new(0, 0, 0, 0, 0);
+    private static Grid Empty => new(0, 0, 0, 0, 0, 0);
 }

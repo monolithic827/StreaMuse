@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using StreaMuse.DjAddon.Fetch;
 using StreaMuse.DjAddon.Mixing;
+using StreaMuse.DjAddon.Sfx;
 using StreaMuse.Media;
 
 namespace StreaMuse.DjAddon;
@@ -35,12 +36,39 @@ public sealed class DjAddon : IDjAddon
     /// but stepping a filter mix in one sample clicks, so it moves over a few milliseconds instead.</summary>
     private const double BassSmoothingMs = 8;
 
+    /// <summary>Chance a given transition gets a sound effect, once the cooldown below allows a roll
+    /// at all. Airhorn-spam is the standard complaint about bad hype mixes - this is meant to read as
+    /// an occasional accent, not wallpaper.</summary>
+    private const double SfxChance = 0.25;
+
+    /// <summary>Transitions that must pass with nothing played before another roll is allowed.</summary>
+    private const int SfxCooldownTransitions = 2;
+
+    /// <summary>Linear fade in/out on a one-shot, so starting or stopping mid-waveform does not
+    /// click. 5ms at 48kHz.</summary>
+    private const int SfxFadeSamples = 240;
+
+    /// <summary>How late a decoded effect may still be worth playing, in beats past the moment it was
+    /// scheduled for. Decoding runs in the background after the roll succeeds and can occasionally
+    /// lose the race against a short transition's lead time; beyond this window the moment it was
+    /// meant to land on has passed, and playing it late reads as a mistake rather than a hit.</summary>
+    private const double SfxLateToleranceBeats = 1.0;
+
     private readonly Lock _sync = new();
     private readonly List<PendingTrack> _queue = [];
     private readonly ConcurrentQueue<float[]> _rollingInbox = new();
+    private readonly Random _sfxRoll = new();
 
     private DjAddonContext _ctx = null!;
     private CancellationTokenSource? _rollingCts;
+    private SfxLibrary? _sfxLibrary;
+    private SfxVoice? _sfxVoice;
+    private int _sfxCooldown;
+    // Volatile: read without the lock as a fast path in MaybePauseSource, which Mix calls on nearly
+    // every block for a track's entire steady body - the definitive check is still the locked one
+    // underneath, this just skips locking at all for the overwhelming majority of those calls, where
+    // the flag is already set and there is nothing to do.
+    private volatile bool _sourcePaused;
 
     private Deck? _incoming;
     private Deck? _outgoing;
@@ -59,6 +87,16 @@ public sealed class DjAddon : IDjAddon
     private Biquad? _liveHighPass;
     private double _liveBassSmoothed = 1;
 
+    /// <summary>Mix's return buffer, reused across calls rather than allocated fresh - AudioPacer
+    /// copies it out before the next call (see AudioPacer.RunAsync), so nothing holds a reference to
+    /// a previous call's contents. Mix runs ~50 times a second for as long as any track is playing;
+    /// a fresh array every call is avoidable pressure on a thread CLAUDE.md documents as must-not-block.</summary>
+    private float[]? _outputBuffer;
+
+    /// <summary>1 - e^(-1000 / (BassSmoothingMs * SampleRate)) - constant for the addon's whole life,
+    /// since both inputs are. Cached rather than recomputed with Math.Exp on every Mix call.</summary>
+    private double _bassSmoothing;
+
     private sealed class PendingTrack
     {
         public required string Id { get; init; }
@@ -70,7 +108,12 @@ public sealed class DjAddon : IDjAddon
         public float[]? Pcm { get; set; }
         public byte[]? Artwork { get; set; }
         public long ArtworkVersion { get; set; }
-        public long BeatOffset { get; set; }
+
+        /// <summary>Where this track is cued in from - the first beat of a genuinely steady run
+        /// (BeatDetector.Grid.MixInFrames), not necessarily the track's own first beat. Always an
+        /// exact beat on the track's own grid, so entering here does not break phase alignment.</summary>
+        public long MixInOffset { get; set; }
+
         public double SourceBpm { get; set; }
         public double SourceConfidence { get; set; }
     }
@@ -87,9 +130,23 @@ public sealed class DjAddon : IDjAddon
         public bool Finished => Cursor >= Pcm.Length;
     }
 
+    /// <summary>A one-shot sound effect waiting for its scheduled frame, or already playing. There is
+    /// only ever one - a second roll is refused by the cooldown before a first has finished, so this
+    /// never needs to be a list.</summary>
+    private sealed class SfxVoice
+    {
+        public required float[] Pcm { get; init; }
+        public required long StartFrame { get; init; }
+        public long Cursor { get; set; }
+
+        public bool Finished => Cursor >= Pcm.Length;
+    }
+
     public void Initialize(DjAddonContext context)
     {
         _ctx = context;
+        _sfxLibrary = new SfxLibrary(context.SfxDir, context.FfmpegPath);
+        _bassSmoothing = 1 - Math.Exp(-1000.0 / (BassSmoothingMs * context.SampleRate));
         _rollingCts = new CancellationTokenSource();
         _ = Task.Run(() => RollingBpmLoopAsync(_rollingCts.Token));
     }
@@ -133,37 +190,50 @@ public sealed class DjAddon : IDjAddon
         }
 
         _ctx.StateChanged();
+        EvaluateResume();
     }
 
     public DjSnapshot Snapshot()
     {
-        lock (_sync)
-        {
-            var deck = _incoming;
-            var playing = deck?.Track;
-            var queue = _queue.Where(t => t != playing && t != _outgoing?.Track).Select(ToEntry).ToList();
-
-            double? confidence = playing is not null && _beatmatched
-                ? Math.Round(Math.Min(_liveConfidence, playing.SourceConfidence) * 100, 0)
-                : null;
-
-            var perSecond = (double)(_ctx.SampleRate * _ctx.Channels);
-
-            return new DjSnapshot(
-                queue,
-                playing is null ? null : ToEntry(playing),
-                PhaseText(),
-                confidence,
-                playing?.Album ?? "",
-                deck is null ? 0 : deck.Cursor / perSecond,
-                deck is null ? 0 : deck.Pcm.Length / perSecond,
-                playing?.ArtworkVersion ?? 0);
-        }
+        lock (_sync) return BuildSnapshot();
     }
 
     public byte[]? CurrentArtwork()
     {
         lock (_sync) return _incoming?.Track.Artwork;
+    }
+
+    /// <summary>Snapshot and artwork read together under one lock acquisition, for a caller that needs
+    /// both to describe the same track - see CoverFrameRenderer.CurrentSource. Taking them as two
+    /// separate locked calls let a transition land between them: the snapshot could describe the track
+    /// that just finished while the artwork call, a moment later, already returned the next one's -
+    /// pairing one title with another track's cover for a frame.</summary>
+    public (DjSnapshot Snapshot, byte[]? Artwork) SnapshotWithArtwork()
+    {
+        lock (_sync) return (BuildSnapshot(), _incoming?.Track.Artwork);
+    }
+
+    private DjSnapshot BuildSnapshot()
+    {
+        var deck = _incoming;
+        var playing = deck?.Track;
+        var queue = _queue.Where(t => t != playing && t != _outgoing?.Track).Select(ToEntry).ToList();
+
+        double? confidence = playing is not null && _beatmatched
+            ? Math.Round(Math.Min(_liveConfidence, playing.SourceConfidence) * 100, 0)
+            : null;
+
+        var perSecond = (double)(_ctx.SampleRate * _ctx.Channels);
+
+        return new DjSnapshot(
+            queue,
+            playing is null ? null : ToEntry(playing),
+            PhaseText(),
+            confidence,
+            playing?.Album ?? "",
+            deck is null ? 0 : deck.Cursor / perSecond,
+            deck is null ? 0 : deck.Pcm.Length / perSecond,
+            playing?.ArtworkVersion ?? 0);
     }
 
     /// <summary>Called by the audio pacer on its wall clock (see AudioPacer.RunAsync and CLAUDE.md) -
@@ -181,10 +251,12 @@ public sealed class DjAddon : IDjAddon
 
         Deck? incoming;
         Deck? outgoing;
+        SfxVoice? sfx;
         lock (_sync)
         {
             incoming = _incoming;
             outgoing = _outgoing;
+            sfx = _sfxVoice;
         }
 
         if (incoming is null) return liveSamples;
@@ -192,8 +264,14 @@ public sealed class DjAddon : IDjAddon
 
         var liveHighPass = _liveHighPass!;
         var period = (double)_transitionPeriod;
-        var smoothing = 1 - Math.Exp(-1000.0 / (BassSmoothingMs * _ctx.SampleRate));
-        var output = new float[liveSamples.Length];
+        var smoothing = _bassSmoothing;
+
+        if (_outputBuffer is null || _outputBuffer.Length != liveSamples.Length)
+        {
+            _outputBuffer = new float[liveSamples.Length];
+        }
+
+        var output = _outputBuffer;
 
         // The cue: a queued track comes in over the closing bars of this one, so the blend finishes as
         // it ends. Checked once per block rather than per sample - a 20 ms granularity on a decision
@@ -210,6 +288,8 @@ public sealed class DjAddon : IDjAddon
             }
         }
 
+        MixEnvelope? lastEnvelope = null;
+
         for (var i = 0; i < frames; i++)
         {
             var offset = i * channels;
@@ -223,6 +303,7 @@ public sealed class DjAddon : IDjAddon
             var beatsIn = (blockStart + i - _startFrame) / period;
             var beatsLeft = (incoming.Pcm.Length - incoming.Cursor) / (double)channels / period;
             var envelope = DjTransition.Envelope(beatsIn, beatsLeft, _beatmatched);
+            lastEnvelope = envelope;
 
             // Whatever is on the way out plays the "live" role in the envelope - the previous track
             // when one is still running, otherwise the captured source itself.
@@ -235,6 +316,8 @@ public sealed class DjAddon : IDjAddon
             else _liveBassSmoothed = departingBass;
 
             incoming.BassSmoothed += (envelope.TrackBass - incoming.BassSmoothed) * smoothing;
+
+            var sfxGain = SfxGainAt(sfx, blockStart + i, channels);
 
             for (var c = 0; c < channels; c++)
             {
@@ -249,22 +332,53 @@ public sealed class DjAddon : IDjAddon
                 var departingMixed = departingHigh + (float)departingBass * (departingRaw - departingHigh);
                 var incomingMixed = incomingHigh + (float)incoming.BassSmoothed * (incomingRaw - incomingHigh);
 
+                var sfxSample = sfxGain > 0 ? sfx!.Pcm[sfx.Cursor + c] * sfxGain : 0f;
+
                 output[offset + c] = SoftClip(
-                    departingMixed * envelope.LiveGain + incomingMixed * envelope.TrackGain);
+                    departingMixed * envelope.LiveGain + incomingMixed * envelope.TrackGain + sfxSample);
             }
 
             incoming.Cursor += channels;
             if (departing is not null) departing.Cursor += channels;
+            if (sfxGain > 0) sfx!.Cursor += channels;
         }
+
+        if (sfx is { Finished: true }) lock (_sync) if (_sfxVoice == sfx) _sfxVoice = null;
+
+        // Fully on DJ content once the live/outgoing side has nothing left to contribute - the
+        // captured app's audio is unused from here until this track's own outro needs it again, so
+        // it is safe (and, for Spotify/Apple, wanted) to pause it. See DiscoveryService.
+        if (lastEnvelope is { LiveGain: <= 0f }) MaybePauseSource();
 
         RetireFinished();
         return output;
     }
 
+    /// <summary>Gain for the sound effect at this absolute frame - 0 before it starts or after it
+    /// ends, ramped over <see cref="SfxFadeSamples"/> at both edges so a one-shot never clicks in or
+    /// out. A voice that has not reached its start frame yet contributes nothing without being
+    /// touched, so a decode that finishes early just waits quietly.</summary>
+    private static float SfxGainAt(SfxVoice? sfx, long frame, int channels)
+    {
+        if (sfx is null || frame < sfx.StartFrame || sfx.Finished) return 0f;
+
+        var into = sfx.Cursor / channels;
+        var remaining = sfx.Pcm.Length / channels - into;
+
+        var fadeIn = Math.Min(1.0, into / (double)SfxFadeSamples);
+        var fadeOut = Math.Min(1.0, remaining / (double)SfxFadeSamples);
+        return (float)Math.Min(fadeIn, fadeOut);
+    }
+
     /// <summary>Drops a deck once it has stopped contributing: the outgoing one when its transition is
     /// over or its audio ran out, the incoming one when the track ends.</summary>
+    /// <summary>Called every Mix block - the audio-pacer path CLAUDE.md documents as must-not-block -
+    /// so nothing here may run unconditionally. Both branches below are false on almost every call
+    /// (a deck is not retiring on most 20ms blocks), and EvaluateResume takes a lock and scans the
+    /// queue, so it is only worth calling on the rare block where something actually retired.</summary>
     private void RetireFinished()
     {
+        var retired = false;
         var completed = false;
 
         lock (_sync)
@@ -275,6 +389,7 @@ public sealed class DjAddon : IDjAddon
                 _queue.Remove(outgoing.Track);
                 outgoing.Track.Status = "done";
                 _outgoing = null;
+                retired = true;
             }
 
             if (_incoming is { Finished: true } incoming)
@@ -282,14 +397,84 @@ public sealed class DjAddon : IDjAddon
                 _queue.Remove(incoming.Track);
                 incoming.Track.Status = "done";
                 _incoming = null;
+                retired = true;
                 completed = true;
             }
         }
+
+        if (!retired) return;
+
+        EvaluateResume();
 
         if (!completed) return;
 
         _ctx.StateChanged();
         StartNext(handover: false);
+    }
+
+    /// <summary>Resumes the captured app as soon as nothing is left to hand off to - eagerly, since
+    /// resuming early costs nothing (see Mix: live audio the envelope does not want yet is simply
+    /// multiplied by zero) where resuming late means dead air right when the outro needs it. Pausing
+    /// is the opposite: as late as possible, only once live audio is genuinely unused - see Mix.</summary>
+    private void EvaluateResume()
+    {
+        bool hasSuccessor;
+        lock (_sync)
+        {
+            hasSuccessor = _queue.Any(t =>
+                t != _incoming?.Track && t != _outgoing?.Track &&
+                t.Status is not ("failed" or "rejected" or "done"));
+        }
+
+        if (!hasSuccessor) MaybeResumeSource();
+    }
+
+    private void MaybePauseSource()
+    {
+        // Unlocked fast path: Mix calls this on nearly every ~20ms block for a track's entire steady
+        // body (see Mix), and after the first call _sourcePaused is already true for the rest of it -
+        // taking a lock tens of times a second, for minutes, to find nothing to do each time is exactly
+        // the avoidable hot-path cost EvaluateResume had. The locked check below is still what actually
+        // decides; this only skips the lock, never the decision.
+        if (_sourcePaused) return;
+
+        // The command has to be dispatched from inside the same lock as the flag flip, not after
+        // releasing it: MediaThread executes commands in the order they were enqueued, and enqueueing
+        // is a synchronous, non-blocking BlockingCollection.Add - safe to do here - so this is what
+        // guarantees a pause decided first cannot reach MediaThread after a resume decided second.
+        // Releasing the lock first left a window where a resume on another thread could see the flag
+        // already flipped and enqueue its own command ahead of this one, leaving the app genuinely
+        // paused while _sourcePaused read false with nothing left to correct it.
+        lock (_sync)
+        {
+            if (_sourcePaused) return;
+            _sourcePaused = true;
+            _ = RunSourceCommandAsync(_ctx.PauseSource, "paused the captured app - mixing has taken over");
+        }
+    }
+
+    private void MaybeResumeSource()
+    {
+        lock (_sync)
+        {
+            if (!_sourcePaused) return;
+            _sourcePaused = false;
+            _ = RunSourceCommandAsync(_ctx.ResumeSource, "resumed the captured app - nothing left queued");
+        }
+    }
+
+    /// <summary>A no-op (false) whenever the source is not Apple Music or Spotify - see
+    /// DiscoveryService.TryPauseSourceAsync - so this only logs when something actually happened.</summary>
+    private async Task RunSourceCommandAsync(Func<Task<bool>> command, string didMessage)
+    {
+        try
+        {
+            if (await command()) _ctx.LogInfo($"DJ {didMessage}");
+        }
+        catch (Exception ex)
+        {
+            _ctx.LogWarn($"DJ could not control the captured app: {ex.Message}");
+        }
     }
 
     private async Task FetchAsync(PendingTrack pending, CancellationToken ct)
@@ -328,6 +513,7 @@ public sealed class DjAddon : IDjAddon
                 pending.Status = "rejected";
                 _ctx.LogWarn($"DJ rejected \"{title}\": {audition.Reason}");
                 _ctx.StateChanged();
+                EvaluateResume();
                 return;
             }
 
@@ -337,15 +523,17 @@ public sealed class DjAddon : IDjAddon
             var grid = ReadGrid(pcm);
 
             pending.Pcm = pcm;
-            pending.BeatOffset = grid.PhaseFrames * _ctx.Channels;
+            pending.MixInOffset = grid.MixInFrames * _ctx.Channels;
             pending.SourceBpm = grid.Bpm;
             pending.SourceConfidence = grid.Confidence;
 
             var skipped = audition.StartSample / (double)(_ctx.SampleRate * _ctx.Channels);
+            var mixInSeconds = pending.MixInOffset / (double)(_ctx.SampleRate * _ctx.Channels);
             _ctx.LogInfo(
                 $"DJ auditioned \"{title}\": {audition.DurationSeconds:F0}s, peak {audition.PeakDb:F1} dB" +
                 (skipped > 0.1 ? $", skipped {skipped:F1}s of intro" : "") +
-                (grid.Bpm > 0 ? $", {grid.Bpm:F0} BPM at {grid.Confidence:P0} confidence" : ", no clear tempo"));
+                (grid.Bpm > 0 ? $", {grid.Bpm:F0} BPM at {grid.Confidence:P0} confidence" : ", no clear tempo") +
+                (mixInSeconds > 0.1 ? $", cues in at {mixInSeconds:F1}s once the groove locks in" : ""));
 
             pending.Status = "ready";
             _ctx.StateChanged();
@@ -359,6 +547,7 @@ public sealed class DjAddon : IDjAddon
             pending.Status = "failed";
             _ctx.LogError($"DJ request \"{pending.Query}\" failed: {ex.Message}");
             _ctx.StateChanged();
+            EvaluateResume();
         }
     }
 
@@ -418,7 +607,7 @@ public sealed class DjAddon : IDjAddon
     private long NextPhraseOnDeck(Deck deck, long period, int channels)
     {
         var position = deck.Cursor / channels;
-        var beatsPlayed = (position - deck.Track.BeatOffset / channels) / (double)period;
+        var beatsPlayed = (position - deck.Track.MixInOffset / channels) / (double)period;
         var phrase = Math.Ceiling((beatsPlayed + StartLeadBeats) / 4) * 4;
 
         return _streamFrames + (long)Math.Max(0, (phrase - beatsPlayed) * period);
@@ -488,8 +677,14 @@ public sealed class DjAddon : IDjAddon
                     : $"mixing in \"{next.Title}\" - no clear beat to lock to, fading instead";
             }
 
-            // Enter the track on one of its own beats, so beat one of the mix is beat one of both.
-            var cursor = _beatmatched ? Math.Min(next.BeatOffset, pcm.Length - channels) : 0;
+            // Enter on the track's own mix-in point (BeatDetector.Grid.MixInFrames) rather than
+            // wherever it happens to start - a DJ cues a record from where its groove has actually
+            // locked in, not from frame zero. This applies whether or not the drop itself is
+            // beatmatched: even a plain fade sounds far better starting on a steady beat than cold.
+            // Falls back to 0 by construction when a track has no usable grid at all - MixInFrames is
+            // 0 on BeatDetector's empty result, the same "nothing to work with" case the fallback fade
+            // already handles.
+            var cursor = Math.Min(next.MixInOffset, pcm.Length - channels);
 
             if (leaving is not null) leaving.Track.Status = "mixing out";
             _outgoing = leaving;
@@ -503,7 +698,50 @@ public sealed class DjAddon : IDjAddon
 
         _ctx.LogInfo(message);
         _ctx.StateChanged();
+        TryTriggerSfx();
         return true;
+    }
+
+    /// <summary>Rolls the dice for a sound effect on the transition that just started. Picking and
+    /// decoding run in the background - StartNext is sometimes called from inside Mix's cue check, so
+    /// nothing here can block the audio thread - and the result is only installed if it still lands
+    /// close enough to the beat it was scheduled for; see SfxLateToleranceBeats.</summary>
+    private void TryTriggerSfx()
+    {
+        if (!_ctx.ReadSettings().SfxEnabled || _sfxLibrary is null) return;
+
+        long startFrame;
+        long toleranceFrames;
+
+        lock (_sync)
+        {
+            if (_sfxCooldown > 0)
+            {
+                _sfxCooldown--;
+                return;
+            }
+
+            if (_sfxRoll.NextDouble() >= SfxChance) return;
+
+            _sfxCooldown = SfxCooldownTransitions;
+            startFrame = _startFrame;
+            toleranceFrames = (long)(SfxLateToleranceBeats * _transitionPeriod);
+        }
+
+        _ = Task.Run(async () =>
+        {
+            var pcm = await _sfxLibrary.PickAsync(_ctx.SampleRate, _ctx.Channels, CancellationToken.None);
+            if (pcm is null || pcm.Length == 0) return;
+
+            if (_streamFrames > startFrame + toleranceFrames)
+            {
+                _ctx.LogWarn("DJ sound effect missed its cue - decoding took too long, skipping it");
+                return;
+            }
+
+            lock (_sync) _sfxVoice = new SfxVoice { Pcm = pcm, StartFrame = startFrame };
+            _ctx.LogInfo($"DJ sound effect scheduled ({pcm.Length / _ctx.Channels / (double)_ctx.SampleRate:F1}s)");
+        });
     }
 
     /// <summary>Keeps the live beat grid current. Runs off the pacer's own sample timeline - the frame

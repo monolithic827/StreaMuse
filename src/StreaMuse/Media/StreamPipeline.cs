@@ -90,7 +90,7 @@ public sealed class StreamPipeline(
             _meter.Reset();
             _reportedShedSeconds = 0;
 
-            var videoPacer = new VideoPacer(new CoverFrameRenderer(settings, artwork, hub));
+            var videoPacer = new VideoPacer(new CoverFrameRenderer(settings, artwork, hub, djHost));
             var encoder = new FfmpegEncoder(hub);
             _encoder = encoder;
 

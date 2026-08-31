@@ -37,6 +37,7 @@ internal static class Program
         Directory.CreateDirectory(Paths.HlsDir);
         Directory.CreateDirectory(Paths.PluginsDir);
         Directory.CreateDirectory(Paths.DjCacheDir);
+        Directory.CreateDirectory(Paths.DjSfxDir);
 
         var controlPort = PortFinder.Pick(7788);
         var publicPort = PortFinder.Pick(7789);
@@ -49,7 +50,7 @@ internal static class Program
         var tunnel = new CloudflaredTunnel(settings, hub, deps, publicPort);
 
         var djHost = new DjAddonHost();
-        djHost.TryLoad(BuildDjAddonContext(settings, deps, hub, djHost), hub);
+        djHost.TryLoad(BuildDjAddonContext(settings, deps, hub, djHost, discovery), hub);
 
         var pipeline = new StreamPipeline(settings, hub, deps, discovery, artwork, tunnel, djHost);
 
@@ -96,7 +97,7 @@ internal static class Program
     /// <summary>Bundles the paths/settings/callbacks a loaded addon needs. Built once at startup;
     /// the Func fields let it keep reading live values (ffmpeg/yt-dlp may still be downloading).</summary>
     private static Media.DjAddonContext BuildDjAddonContext(
-        AppSettings settings, DependencyManager deps, StateHub hub, DjAddonHost djHost) =>
+        AppSettings settings, DependencyManager deps, StateHub hub, DjAddonHost djHost, DiscoveryService discovery) =>
         new(
             Capture.ProcessLoopbackCapture.SampleRate,
             Capture.ProcessLoopbackCapture.Channels,
@@ -106,8 +107,11 @@ internal static class Program
             message => hub.Log(LineLevel.Info, message),
             message => hub.Log(LineLevel.Warn, message),
             message => hub.Log(LineLevel.Error, message),
-            () => new Media.DjAddonSettings(settings.DjAddonEnabled, settings.CrossfadeSeconds),
-            () => hub.SetDj(djHost.Addon?.Snapshot()));
+            () => new Media.DjAddonSettings(settings.DjAddonEnabled, settings.CrossfadeSeconds, settings.DjSfxEnabled),
+            () => hub.SetDj(djHost.Addon?.Snapshot()),
+            discovery.TryPauseSourceAsync,
+            discovery.TryResumeSourceAsync,
+            Paths.DjSfxDir);
 
     /// <summary>
     /// Runs with the window already gone and nothing above it to catch anything, so a step that

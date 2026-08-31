@@ -431,6 +431,7 @@ function fillSettings() {
   document.getElementById('set-autotunnel').checked = settings.autoTunnel;
   document.getElementById('set-dj-enabled').checked = settings.djAddonEnabled;
   document.getElementById('set-dj-fade').value = settings.crossfadeSeconds;
+  document.getElementById('set-dj-sfx').checked = settings.djSfxEnabled;
 
   const resolution = settings.width + 'x' + settings.height;
   for (const radio of document.querySelectorAll('input[name="res"]')) {
@@ -468,7 +469,8 @@ function readSettings() {
     namedTunnelHostname: document.getElementById('set-host').value.trim(),
     autoTunnel: document.getElementById('set-autotunnel').checked,
     djAddonEnabled: document.getElementById('set-dj-enabled').checked,
-    crossfadeSeconds: Number(document.getElementById('set-dj-fade').value)
+    crossfadeSeconds: Number(document.getElementById('set-dj-fade').value),
+    djSfxEnabled: document.getElementById('set-dj-sfx').checked
   };
 }
 

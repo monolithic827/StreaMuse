@@ -24,6 +24,11 @@ public interface IDjAddon
     /// ArtworkStore for the same reasoning on the host side.</summary>
     byte[]? CurrentArtwork();
 
+    /// <summary>Snapshot and artwork read together, for a caller - the video overlay - that needs both
+    /// to describe the same track. Calling Snapshot() and CurrentArtwork() separately lets a transition
+    /// land between the two reads and pair one track's title with another's cover for a frame.</summary>
+    (DjSnapshot Snapshot, byte[]? Artwork) SnapshotWithArtwork();
+
     void Shutdown();
 }
 
@@ -39,7 +44,10 @@ public sealed class DjAddonContext(
     Action<string> logWarn,
     Action<string> logError,
     Func<DjAddonSettings> readSettings,
-    Action stateChanged)
+    Action stateChanged,
+    Func<Task<bool>> pauseSource,
+    Func<Task<bool>> resumeSource,
+    string sfxDir)
 {
     public int SampleRate { get; } = sampleRate;
     public int Channels { get; } = channels;
@@ -54,11 +62,20 @@ public sealed class DjAddonContext(
     /// <summary>The addon calls this after anything that changes Snapshot() so the host can
     /// rebroadcast state without the panel having to poll for it.</summary>
     public Action StateChanged { get; } = stateChanged;
+
+    /// <summary>Pauses/resumes the captured app - a no-op returning false for any source but Apple
+    /// Music or Spotify, where "the app" is unambiguous. See DiscoveryService.TryPauseSourceAsync.</summary>
+    public Func<Task<bool>> PauseSource { get; } = pauseSource;
+
+    public Func<Task<bool>> ResumeSource { get; } = resumeSource;
+
+    /// <summary>Folder the addon scans for its own drop-in sound effect files.</summary>
+    public string SfxDir { get; } = sfxDir;
 }
 
 /// <summary>Config the addon reads live from AppSettings, copied out so the addon assembly never
 /// needs a reference to the host's Settings project.</summary>
-public sealed record DjAddonSettings(bool Enabled, double CrossfadeSeconds);
+public sealed record DjAddonSettings(bool Enabled, double CrossfadeSeconds, bool SfxEnabled);
 
 public sealed record DjRequestResult(bool Accepted, string? Error, DjQueueEntry? Entry);
 

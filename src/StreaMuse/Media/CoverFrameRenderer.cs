@@ -7,7 +7,7 @@ namespace StreaMuse.Media;
 
 /// <summary>Draws the video track as JPEG frames pushed down a pipe, so the picture can change
 /// mid-stream without restarting ffmpeg and breaking the playlist.</summary>
-public sealed class CoverFrameRenderer(AppSettings settings, ArtworkStore artwork, StateHub hub)
+public sealed class CoverFrameRenderer(AppSettings settings, ArtworkStore artwork, StateHub hub, DjAddonHost djHost)
 {
     private const int JpegQuality = 88;
 
@@ -22,29 +22,48 @@ public sealed class CoverFrameRenderer(AppSettings settings, ArtworkStore artwor
     /// <summary>Current frame as JPEG, re-rendered only when something visible changed.</summary>
     public byte[] Render()
     {
-        var now = hub.NowPlaying;
+        var (now, artBytes, artVersion, isRequest) = CurrentSource();
         var progress = now.DurationSeconds > 0
             ? Math.Clamp(now.PositionSeconds / now.DurationSeconds, 0, 1)
             : 0;
 
         // Quantised so a static track does not force a re-encode every frame.
         var signature = string.Join('|',
-            artwork.Version, settings.Width, settings.Height, settings.TextOverlay,
+            artVersion, settings.Width, settings.Height, settings.TextOverlay, isRequest,
             now.Title, now.Artist, now.Album, (int)(progress * 600));
 
         if (_lastFrame is not null && signature == _lastSignature) return _lastFrame;
 
-        _lastFrame = RenderFrame(now, progress);
+        _lastFrame = RenderFrame(now, progress, artBytes, artVersion, isRequest);
         _lastSignature = signature;
         return _lastFrame;
     }
 
-    private byte[] RenderFrame(NowPlaying now, double progress)
+    /// <summary>What the frame shows: the DJ's own track while one is actually mixing, the regular
+    /// SMTC now-playing otherwise. This matters beyond just "the DJ has its own cover" - once a DJ
+    /// track fully takes over, DjAddon pauses Apple Music/Spotify (see CLAUDE.md), so their SMTC
+    /// metadata goes stale for as long as the DJ track plays. Without this the video would keep
+    /// showing the paused track's cover while a different song plays audibly underneath it.</summary>
+    private (NowPlaying Now, byte[]? Artwork, long ArtworkVersion, bool IsRequest) CurrentSource()
+    {
+        if (djHost.Addon?.SnapshotWithArtwork() is ({ NowMixing: { } mixing } snapshot, var djArt))
+        {
+            var now = new NowPlaying(
+                mixing.Title, mixing.Artist, snapshot.Album, true,
+                snapshot.PositionSeconds, snapshot.DurationSeconds, snapshot.ArtworkVersion);
+
+            return (now, djArt, snapshot.ArtworkVersion, true);
+        }
+
+        return (hub.NowPlaying, artwork.Bytes, artwork.Version, false);
+    }
+
+    private byte[] RenderFrame(NowPlaying now, double progress, byte[]? artBytes, long artVersion, bool isRequest)
     {
         var width = settings.Width;
         var height = settings.Height;
 
-        EnsureArtworkDecoded();
+        EnsureArtworkDecoded(artBytes, artVersion);
 
         using var surface = SKSurface.Create(new SKImageInfo(width, height, SKColorType.Rgba8888));
         var canvas = surface.Canvas;
@@ -67,7 +86,7 @@ public sealed class CoverFrameRenderer(AppSettings settings, ArtworkStore artwor
             DrawArtPlaceholder(canvas, artBox);
         }
 
-        if (overlay) DrawText(canvas, now, progress, artBox, width, height);
+        if (overlay) DrawText(canvas, now, progress, artBox, width, height, isRequest);
 
         using var image = surface.Snapshot();
         using var data = image.Encode(SKEncodedImageFormat.Jpeg, JpegQuality);
@@ -110,7 +129,8 @@ public sealed class CoverFrameRenderer(AppSettings settings, ArtworkStore artwor
         canvas.DrawRect(box, stroke);
     }
 
-    private void DrawText(SKCanvas canvas, NowPlaying now, double progress, SKRect artBox, int width, int height)
+    private void DrawText(
+        SKCanvas canvas, NowPlaying now, double progress, SKRect artBox, int width, int height, bool isRequest)
     {
         var left = artBox.Right + width * 0.045f;
         var right = width - width * 0.05f;
@@ -126,7 +146,13 @@ public sealed class CoverFrameRenderer(AppSettings settings, ArtworkStore artwor
         using var faint = new SKPaint { Color = new SKColor(0xFF, 0xFF, 0xFF, 0x70), IsAntialias = true };
         using var accent = new SKPaint { Color = new SKColor(0x94, 0xBC, 0xE3), IsAntialias = true };
 
-        var y = artBox.Top + height * 0.10f;
+        // Viewers can't otherwise tell a request from whatever the stream would normally be playing -
+        // the two look identical once it's dropped in.
+        if (isRequest) DrawRequestedTag(canvas, left, artBox.Top, width, height);
+
+        // Pushed down when the tag is showing - the title font's cap-height reaches close enough to
+        // its own baseline that at the normal position it visibly touched the pill above it.
+        var y = artBox.Top + height * (isRequest ? 0.135f : 0.10f);
 
         canvas.DrawText(Ellipsize(now.Title, titleFont, available), left, y, SKTextAlign.Left, titleFont, bright);
         y += height * 0.085f;
@@ -151,16 +177,34 @@ public sealed class CoverFrameRenderer(AppSettings settings, ArtworkStore artwor
         canvas.DrawText(total, right - totalWidth, barY + height * 0.045f, SKTextAlign.Left, smallFont, faint);
     }
 
-    private void EnsureArtworkDecoded()
+    /// <summary>A small filled pill above the title, sat in the gap between the art box's top and
+    /// where the title itself starts (10% of height down) - there is room for one without pushing
+    /// anything else.</summary>
+    private static void DrawRequestedTag(SKCanvas canvas, float left, float top, int width, int height)
     {
-        var version = artwork.Version;
+        const string label = "REQUESTED";
+        using var font = new SKFont(SKTypeface.FromFamilyName("Segoe UI Semibold"), height * 0.028f);
+
+        var padX = width * 0.012f;
+        var tagHeight = height * 0.045f;
+        var tagTop = top + height * 0.025f;
+        var rect = new SKRect(left, tagTop, left + font.MeasureText(label) + padX * 2, tagTop + tagHeight);
+
+        using var fill = new SKPaint { Color = new SKColor(0x94, 0xBC, 0xE3), IsAntialias = true };
+        canvas.DrawRoundRect(rect, tagHeight / 2, tagHeight / 2, fill);
+
+        using var text = new SKPaint { Color = new SKColor(0x10, 0x12, 0x14), IsAntialias = true };
+        canvas.DrawText(label, rect.Left + padX, rect.MidY + height * 0.010f, SKTextAlign.Left, font, text);
+    }
+
+    private void EnsureArtworkDecoded(byte[]? bytes, long version)
+    {
         if (version == _decodedVersion) return;
 
         _decodedVersion = version;
         _decoded?.Dispose();
         _decoded = null;
 
-        var bytes = artwork.Bytes;
         if (bytes is null || bytes.Length == 0) return;
 
         try

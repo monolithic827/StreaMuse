@@ -419,6 +419,99 @@ which is the whole mechanism behind shipping mixing separately from the app.
   bass swap, and downloads routinely arrive at or above 0 dBFS already (two of the test tracks peaked
   at +2.6 and +1.8 dB), so their sum clips hard without it - measured at -0.1 dB peak on the stream
   before it was added.
+## Captured-app control (pause/resume)
+
+While Apple Music or Spotify is the source, `DjAddon` pauses it once a DJ track has fully taken over
+(`Mix`'s envelope shows `LiveGain <= 0` - live audio is genuinely unused from that point until the
+current track's own outro needs it again) and resumes it as soon as it knows nothing is queued behind
+whatever is playing. The two triggers are asymmetric on purpose: pause as *late* as possible - only
+once live audio is truly not needed - resume as *early* as possible, since resuming ahead of when it's
+needed costs nothing (the unused live samples are just multiplied by zero in the envelope until the
+outro wants them) where resuming late means dead air right when it does. `DiscoveryService.
+TryPauseSourceAsync`/`TryResumeSourceAsync` gate this to Apple Music and Spotify only - the two sources
+that mean a specific desktop app rather than an arbitrary picked process - and reuse the exact same
+`ProcessIdentity.Matches` session lookup that metadata reads use, so a transport command can never land
+on the wrong app's session. A source that declines the command, or isn't Apple/Spotify at all, is
+silently a no-op (`false`), which is also what lets the addon call these unconditionally without
+checking the source itself.
+
+## Mix's hot-path cost (`DjAddon.Mix`)
+
+`Mix` runs on the audio pacer's 20ms tick - `AudioPacer.WriteIntervalMs` - which is ~50 calls a second
+for as long as any track is playing, not just during a transition. Three things that look like fine
+detail matter here specifically because of that frequency:
+
+- **The output array is reused (`_outputBuffer`), not allocated fresh per call.** `AudioPacer.RunAsync`
+  copies `Mix`'s return value out before the next call (`Array.Copy(mixed, scratch, ...)`), so nothing
+  ever holds a reference to a previous call's contents - reusing one buffer across calls is safe by
+  construction, not just in practice. A fresh array 50 times a second, for as long as a stream runs, is
+  exactly the kind of avoidable GC pressure a must-not-block thread should not carry.
+- **The bass-smoothing coefficient is computed once, in `Initialize`, not recomputed with `Math.Exp`
+  every call.** Both of its inputs (`BassSmoothingMs`, `SampleRate`) are constant for the addon's whole
+  life, so recomputing it was never buying anything - the value is always the same.
+- **`MaybePauseSource` checks `_sourcePaused` unlocked before taking the lock.** Once a track reaches
+  its steady body - the majority of its runtime - this method is called on nearly every block for
+  minutes at a stretch, and after the first call there is nothing left to do. Taking `_sync` every time
+  anyway is the same class of cost `EvaluateResume` had before it was gated to only run when a deck
+  actually retired (see below); the field is `volatile` so the unlocked read is never arbitrarily
+  stale, and the locked check underneath is still what actually decides - this only skips the lock,
+  never the decision.
+
+Do not reverse any of these to "simplify" the code without re-measuring: none of the three change what
+`Mix` computes, only how much unnecessary work happens getting there.
+
+## DJ track in the video (`CoverFrameRenderer.CurrentSource`)
+
+The video frame shows the DJ's own track - its title/artist/album and `CurrentArtwork()` - whenever
+`djHost.Addon?.Snapshot().NowMixing` is not null, falling back to the regular SMTC `NowPlaying`/
+`ArtworkStore` otherwise. This is not just cosmetic: once a DJ track fully takes over, `DjAddon` pauses
+Apple Music/Spotify (see above), so their SMTC metadata is frozen for as long as it plays - without
+this the video would keep showing a paused track's cover while a different song is audibly playing.
+`EnsureArtworkDecoded` takes explicit bytes/version parameters rather than reading `ArtworkStore`
+directly, since the decoded-bitmap cache now has two possible sources for what counts as "the current
+art" and has to invalidate on either one changing. A "REQUESTED" pill renders above the title in the
+DJ case - a viewer otherwise cannot tell a request from whatever the stream would normally be playing,
+since dropped-in audio looks identical in the frame - positioned in the gap above where the title's
+own glyphs start; the title itself is pushed down slightly for the DJ case, since at the normal
+position its cap-height visibly touched the pill above it.
+
+## Where a track is cued in from (`BeatDetector.FindMixIn`, `PendingTrack.MixInOffset`)
+
+A track does not enter at frame 0 of its (audition-trimmed) audio, or at the very first beat
+`BeatDetector` finds - it enters at the first beat that begins a run of `MixInWindowBeats` (8, two
+bars) consecutive well-spaced beats. That is a DJ's actual cueing decision: find where the groove has
+locked in, not wherever the file happens to start. `FindMixIn` scans the same beat list `Regularity`
+already has, using the same on-grid tolerance, so this costs nothing extra to compute and is always an
+exact beat on the track's own grid - never an arbitrary timestamp, which matters because
+`NextPhraseOnDeck`'s phrase-boundary math anchors on it (`MixInOffset`) directly. Falls back to the
+very first beat when no `MixInWindowBeats`-long steady run exists in the analysed window (an ambient or
+rubato opening) - entering there is still better than frame 0, and `MixInFrames` is 0 by construction on
+`BeatDetector`'s empty result, so an unreadable track still degrades to "start at the top."
+
+This applies whether or not the drop itself ends up beatmatched: even a plain fade sounds far better
+starting on a steady beat than on whatever happened to be playing at frame 0 - a sparse intro fill, a
+vocal ad-lib, silence. Verified live: entering "Stayin' Alive" mid-transition landed the deck at
+position 0.602s, matching the logged mix-in point exactly, not 0.
+
+## Sound effects (`Sfx/SfxLibrary.cs`)
+
+A folder (`%LOCALAPPDATA%\StreaMuse\dj-sfx`) the user drops audio files into; nothing to configure per
+file, no manifest. `DjAddon.TryTriggerSfx` rolls the dice once per transition (a probability plus a
+cooldown that must elapse first - see the constants at the top of `DjAddon.cs` - so it reads as an
+occasional accent rather than wallpaper), and on a hit, picks and decodes a file in the background
+(`AudioDecoder.DecodeAsync`, shared with `YtDlpFetcher` - the same "arbitrary file in, PCM at the mix's
+rate out" need) and schedules it for the same beat-aligned frame the transition itself is scheduled on.
+Because decoding runs in the background after the roll, it can lose the race against a short lead time;
+a result that arrives more than `SfxLateToleranceBeats` late is dropped rather than played off the cue
+it was picked for.
+
+Playback is a third voice mixed additively into `Mix`'s per-sample loop, ahead of `SoftClip` -
+deliberately: modern masters already sit at or above 0 dBFS (see the bass-swap section above), so
+layering a full-level effect on top without going through the same limiter the two decks share would
+risk exactly the clipping that limiter exists to prevent. `SfxGainAt` ramps a linear fade over
+`SfxFadeSamples` at both the start and end of the one-shot, since it can begin or end at any sample
+of its own waveform.
+
 ## Not yet verified
 
 The Spotify **desktop app** branch has never run - it is not installed on the development machine, so
@@ -464,6 +557,30 @@ That is a safe failure, not a silent one, but hardcore and drum-and-bass will fa
 Verified live end to end, against a deliberately silent capture target so the DJ audio could be
 isolated: two requests, the second beat-matched over the first (Stayin' Alive stretched x1.178 from
 104 to 122 BPM and dropped on the beat over Around The World) without waiting for it to finish.
+
+Captured-app pause/resume is now verified against a real, playing Spotify session, and that testing
+found a real bug: `Crossfader.EqualPowerGains(1.0)` returned a live gain of ~6.12e-17, not 0 -
+`Math.Cos(Math.PI/2)` cannot land on an exact zero, since pi/2 has no exact binary representation, and
+that residue survived the cast to float. `Mix` decides "live audio is genuinely unused, safe to pause"
+by checking `LiveGain <= 0f`, so a tiny positive residue meant that check was never true through the
+non-beatmatched fade path - pause silently never fired, for as long as a DJ track played, regardless of
+duration. It looked exactly like "doesn't pause" because the residue rounds away to "0.000" in any log
+or display, which is what let it pass an earlier round of testing undetected: a value can look correct
+at three decimal places and still fail an exact comparison a few lines away. The beatmatched envelope
+in `DjTransition` was unaffected only because it returns a literal `0`, not a trig result - that was
+luck, not a property of the design, and does not generalise to a future envelope shape. Fixed by
+special-casing the endpoints in `EqualPowerGains` rather than trusting `Cos`/`Sin` to reach them - see
+the comment there. Re-verified end to end afterward: a DJ track paused a real, playing Spotify session
+(confirmed via Spotify's own reported SMTC state going from `Playing` to `Paused`), and Skip - emptying
+the queue - resumed it from the exact position it had been paused at, not from the start.
+
+The sound-effect folder's mechanics - scan, random pick avoiding an immediate repeat, background
+decode, beat-aligned scheduling, the additive mix ahead of the limiter - were verified with a synthetic
+tone (band-isolated frequency analysis on a live segment, well above a control band), since no real
+effect files exist yet. Real effects will differ in one way that matters: a synthesized tone has no
+natural attack transient to preserve, so `SfxFadeSamples`' 5ms fade-in is untested against something
+with a sharp onset (an air horn stab, a scratch) where a fade that slow might be audible as softening
+the hit.
 
 What is still unverified: a **live capture source with a real beat**. Every live run has used a silent
 target, so the live-side rolling grid has never actually driven a transition - only track-to-track
