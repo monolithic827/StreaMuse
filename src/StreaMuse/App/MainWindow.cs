@@ -24,7 +24,6 @@ public sealed partial class MainWindow : Form
     private CoreWebView2Environment? _environment;
 
     private DjWindow? _djWindow;
-    private RetroWindow? _retroWindow;
 
     /// <summary>Painted behind both windows; kept so a theme change reaches the DJ window too.</summary>
     private Color _ground;
@@ -307,10 +306,6 @@ public sealed partial class MainWindow : Form
             case "openDj":
                 OpenDjWindow();
                 break;
-
-            case "openRetro":
-                OpenRetroWindow();
-                break;
         }
     }
 
@@ -330,21 +325,6 @@ public sealed partial class MainWindow : Form
         if (_djWindow.WindowState == FormWindowState.Minimized) _djWindow.WindowState = FormWindowState.Normal;
         _djWindow.BringToFront();
         _djWindow.Activate();
-    }
-
-    private void OpenRetroWindow()
-    {
-        if (_environment is null) return;
-
-        if (_retroWindow is null or { IsDisposed: true })
-        {
-            _retroWindow = new RetroWindow(_environment, _startUrl + "retro.html", _hub) { Owner = this };
-        }
-
-        _retroWindow.PlaceCenter(this);
-        _retroWindow.Show();
-        _retroWindow.BringToFront();
-        _retroWindow.Activate();
     }
 
     /// <summary>Hands the drag to the window manager so snapping stays native.</summary>
@@ -380,7 +360,6 @@ public sealed partial class MainWindow : Form
         {
             // Owned, so Windows has already closed it; this is what actually tears down its WebView2.
             _djWindow?.Dispose();
-            _retroWindow?.Dispose();
             _web.Dispose();
         }
 

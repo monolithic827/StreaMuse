@@ -760,3 +760,113 @@ body.log-closed .health-panel {
   margin-inline: 0;
   flex: none;
 }
+
+body.compat-mode {
+  --font-heading: Tahoma, "MS Sans Serif", sans-serif;
+  --font-heading-weight: 400;
+  --font-body: Tahoma, "MS Sans Serif", sans-serif;
+
+  --color-bg: #008080;
+  --color-surface: #c0c0c0;
+  --color-text: #000000;
+  --color-divider: #808080;
+  --color-accent: #000080;
+  --color-accent-2: #1084d0;
+
+  --color-accent-100: #d4d0c8;
+  --color-accent-200: #b8c4de;
+  --color-accent-300: #9cb4d8;
+  --color-accent-400: #6a91c2;
+  --color-accent-500: #3f6fae;
+  --color-accent-600: #1084d0;
+  --color-accent-700: #0a246a;
+  --color-accent-800: #051636;
+  --color-accent-900: #02040a;
+
+  --color-accent-2-100: #d4d0c8;
+  --color-accent-2-200: #b8c4de;
+  --color-accent-2-300: #9cb4d8;
+  --color-accent-2-400: #6a91c2;
+  --color-accent-2-500: #3f6fae;
+  --color-accent-2-600: #1084d0;
+  --color-accent-2-700: #0a246a;
+  --color-accent-2-800: #051636;
+  --color-accent-2-900: #02040a;
+
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+}
+
+body.compat-mode * {
+  text-transform: none !important;
+  letter-spacing: normal !important;
+  box-shadow: none !important;
+}
+
+body.compat-mode .corner {
+  display: none !important;
+}
+
+body.compat-mode .titlebar {
+  background: linear-gradient(90deg, #0a246a, #1084d0) !important;
+  color: #fff !important;
+}
+
+body.compat-mode .card,
+body.compat-mode .dialog {
+  background: #c0c0c0 !important;
+  border: 2px groove #fff !important;
+}
+
+body.compat-mode .btn {
+  background: #c0c0c0 !important;
+  border: 2px outset #dfdfdf !important;
+  color: #000 !important;
+}
+
+body.compat-mode .btn:active {
+  border-style: inset !important;
+}
+
+body.compat-mode .btn-primary {
+  background: #000080 !important;
+  color: #fff !important;
+}
+
+body.compat-mode .btn-ghost {
+  background: transparent !important;
+  border-color: transparent !important;
+}
+
+body.compat-mode .input,
+body.compat-mode .seg {
+  background: #fff !important;
+  border: 2px inset #dfdfdf !important;
+  color: #000 !important;
+}
+
+body.compat-mode .seg-opt+.seg-opt {
+  border-left: 1px solid #808080 !important;
+}
+
+body.compat-mode .seg-opt:has(input:checked) {
+  background: #000080 !important;
+  color: #fff !important;
+}
+
+body.compat-mode .tag {
+  background: #c0c0c0 !important;
+  border: 1px solid #000 !important;
+  color: #000 !important;
+}
+
+body.compat-mode .health {
+  border-top: 1px solid #808080 !important;
+}
+
+body.compat-mode .health-panel,
+body.compat-mode .log-list {
+  background: #fff !important;
+  border: 2px inset #dfdfdf !important;
+}
