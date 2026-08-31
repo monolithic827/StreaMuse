@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 
-namespace StreaMuse.DjAddon.Audio;
+namespace StreaMuse.Dj.Audio;
 
 /// <summary>Decodes any file ffmpeg understands to raw interleaved float32 PCM. Shared by
 /// YtDlpFetcher (a downloaded track) and SfxLibrary (a dropped-in sound effect) - both just need

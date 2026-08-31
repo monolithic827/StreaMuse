@@ -1,15 +1,15 @@
 using System.Collections.Concurrent;
-using StreaMuse.DjAddon.Fetch;
-using StreaMuse.DjAddon.Mixing;
-using StreaMuse.DjAddon.Sfx;
+using StreaMuse.Dj.Fetch;
+using StreaMuse.Dj.Mixing;
+using StreaMuse.Dj.Sfx;
 using StreaMuse.Media;
 
-namespace StreaMuse.DjAddon;
+namespace StreaMuse.Dj;
 
 /// <summary>The decks. Holds a queue of requests, up to two playing tracks while one mixes into the
 /// next, and a running estimate of the live source's beat grid; drops each track in on a beat and
 /// trades the bass across rather than fading. See DjTransition for the shape of the blend.</summary>
-public sealed class DjAddon : IDjAddon
+public sealed class DjAddon
 {
     private const int RollingWindowSeconds = 8;
 

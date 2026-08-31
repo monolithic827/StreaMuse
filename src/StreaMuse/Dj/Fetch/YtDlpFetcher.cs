@@ -1,8 +1,8 @@
 using System.Diagnostics;
 using System.Globalization;
-using StreaMuse.DjAddon.Audio;
+using StreaMuse.Dj.Audio;
 
-namespace StreaMuse.DjAddon.Fetch;
+namespace StreaMuse.Dj.Fetch;
 
 /// <summary>Turns a free-text request into decoded PCM and the tags that go with it. Searches
 /// music.youtube.com rather than youtube.com: the music service answers with track, artist and album

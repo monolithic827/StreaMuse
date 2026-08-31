@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO.Pipes;
 using StreaMuse.Capture;
 using StreaMuse.Deps;
+using StreaMuse.Dj;
 using StreaMuse.Settings;
 using StreaMuse.Sources;
 using StreaMuse.State;
@@ -16,7 +17,7 @@ public sealed class StreamPipeline(
     DiscoveryService discovery,
     ArtworkStore artwork,
     CloudflaredTunnel tunnel,
-    DjAddonHost djHost)
+    DjAddon dj)
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Stopwatch _clock = new();
@@ -90,7 +91,7 @@ public sealed class StreamPipeline(
             _meter.Reset();
             _reportedShedSeconds = 0;
 
-            var videoPacer = new VideoPacer(new CoverFrameRenderer(settings, artwork, hub, djHost));
+            var videoPacer = new VideoPacer(new CoverFrameRenderer(settings, artwork, hub, dj));
             var encoder = new FfmpegEncoder(hub);
             _encoder = encoder;
 
@@ -305,11 +306,11 @@ public sealed class StreamPipeline(
     /// a throw passes the block through unmixed.</summary>
     private float[] MixBlock(float[] block)
     {
-        if (djHost.Addon is not { } addon || !settings.DjAddonEnabled) return block;
+        if (!settings.DjAddonEnabled) return block;
 
         try
         {
-            return addon.Mix(block);
+            return dj.Mix(block);
         }
         catch (Exception ex)
         {

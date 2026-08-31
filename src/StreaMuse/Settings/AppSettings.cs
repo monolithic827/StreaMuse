@@ -56,8 +56,7 @@ public sealed class AppSettings
 
     public AppTheme Theme { get; set; } = AppTheme.Auto;
 
-    /// <summary>Whether plugins/StreaMuse.DjAddon.dll should be loaded and wired into the pipeline.
-    /// Has no effect at all when that file isn't present.</summary>
+    /// <summary>Whether the built-in DJ mixer is wired into the pipeline.</summary>
     public bool DjAddonEnabled { get; set; }
 
     public double CrossfadeSeconds { get; set; } = 8;
@@ -135,9 +134,6 @@ public static class Paths
     public static string BinDir { get; } = Path.Combine(DataDir, "bin");
 
     public static string HlsDir { get; } = Path.Combine(DataDir, "hls");
-
-    /// <summary>Where DjAddonHost looks for StreaMuse.DjAddon.dll.</summary>
-    public static string PluginsDir { get; } = Path.Combine(DataDir, "plugins");
 
     /// <summary>Scratch space for the DJ addon's downloaded/decoded audio.</summary>
     public static string DjCacheDir { get; } = Path.Combine(DataDir, "dj-cache");

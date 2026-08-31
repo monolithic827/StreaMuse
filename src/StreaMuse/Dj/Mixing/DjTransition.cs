@@ -1,4 +1,4 @@
-namespace StreaMuse.DjAddon.Mixing;
+namespace StreaMuse.Dj.Mixing;
 
 public readonly record struct MixEnvelope(float LiveGain, float LiveBass, float TrackGain, float TrackBass);
 

@@ -30,6 +30,10 @@
     <PackageReference Include="SkiaSharp" Version="4.151.1" />
     <PackageReference Include="SkiaSharp.NativeAssets.Win32" Version="4.151.1" />
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4129.50" />
+    <!-- Beat detection for the built-in DJ mixer. A managed rewrite of SoundTouch, so nothing native
+         ships alongside it. LGPL-2.1: referenced unmodified and replaceable, which is what that
+         licence asks of a caller. -->
+    <PackageReference Include="SoundTouch.Net" Version="2.3.2" />
   </ItemGroup>
 
   <Target Name="RemoveWebView2WpfReference" BeforeTargets="ResolveAssemblyReferences">

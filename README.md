@@ -71,39 +71,29 @@ otherwise the panel says *no track info reported* rather than guessing.
 separate loopback port that cloudflared never sees. Everything on the public port other than
 `/live/{key}/*.m3u8|.ts` returns 404 - verified, including path traversal attempts.
 
-## DJ addon (optional)
+## DJ mixing (optional)
 
-StreaMuse ships as the plain re-streamer; extra features arrive as plugins you install yourself. The
-DJ plugin lets you request a song from the control panel and have it mixed into the live stream -
-fetched, auditioned, tempo-matched to what's currently playing, and crossfaded in and back out.
-
-To install any plugin: **Settings → Plugins → Install plugin**, and pick a `.dll` or a `.zip`. If
-nothing is loaded yet it activates immediately; otherwise restart StreaMuse. Installed plugins are
-listed there with which one is active.
-
-For the DJ plugin specifically: build `src/StreaMuse.DjAddon/StreaMuse.DjAddon.csproj`, then install
-**both** `StreaMuse.DjAddon.dll` and `SoundTouch.Net.dll` from its output folder - zip them together
-and install the zip in one go - and tick **Enable DJ mixing** in Settings. A **DJ** button
-appears in the top bar and opens the decks in **their own window** - request box, what's playing, the
-queue and skip - so you can keep an eye on the stream and the decks at the same time.
+Built into StreaMuse itself - tick **Enable DJ mixing** in Settings and you can request a song from
+the control panel and have it mixed into the live stream: fetched, auditioned, tempo-matched to
+what's currently playing, and crossfaded in and back out. A **DJ** button appears in the top bar and
+opens the decks in **their own window** - request box, what's playing, the queue and skip - so you
+can keep an eye on the stream and the decks at the same time.
 
 Ask for a song while one is playing and it waits in the queue, then comes in over the closing bars of
 the current track - beat-matched to it, on a phrase boundary - so the blend finishes as that track
 ends, the way a set runs. **Skip to next** brings it in immediately instead; it still mixes rather than
 cuts, and mixes back to your live audio if nothing else is queued.
 
-A plugin runs as part of StreaMuse with the same access to your machine that StreaMuse has - there is
-no sandbox. Only install plugins you trust.
-
-Every request is fetched the same way regardless of your source: the addon searches YouTube with
+Every request is fetched the same way regardless of your source: the mixer searches YouTube with
 `yt-dlp` and downloads the best-match audio on the fly. **This is against YouTube's Terms of
 Service** - it's the only practical way to turn a free-text request into audio, but using it is your
 call and your responsibility, the same posture this project already takes toward auto-downloading
 ffmpeg/cloudflared, just spelled out here because this one fetches copyrighted media. There is no
-Spotify or other streaming-service integration - the addon only ever downloads and mixes in audio
-itself, it never controls another app's playback.
+Spotify or other streaming-service integration for fetching audio - the mixer only ever downloads and
+mixes in audio itself; it does pause/resume Apple Music or Spotify around a request (see below), but
+never controls their playback beyond that.
 
-Like a DJ cueing a record in headphones, the plugin listens to a track before the stream ever hears
+Like a DJ cueing a record in headphones, the mixer listens to a track before the stream ever hears
 it: it checks the download is actually playable, refuses silent or too-short ones outright, and finds
 where the music really starts so the mix doesn't fade the live source out into a silent intro. What it
 found gets logged - *"auditioned: 232s, peak -9.0 dB, skipped 2.0s of intro, 136 BPM"*.
@@ -128,14 +118,13 @@ before dropping a record in.
 The requested track plays on its own clock, so it keeps going even when the app you're capturing is
 silent - which is the usual case when you just want to play a request into a quiet stream.
 
-**With Apple Music or Spotify as the source**, the plugin pauses the app once a request has fully
+**With Apple Music or Spotify as the source**, the mixer pauses the app once a request has fully
 taken over - it isn't contributing any audio at that point anyway - and resumes it as soon as it knows
-nothing else is queued, so the app is playing again in time for its own outro. This has only been
-checked for the safe case (every other source correctly leaves the app alone); the actual pause/resume
-commands haven't been exercised against a real Spotify or Apple Music session.
+nothing else is queued, so the app is playing again in time for its own outro, at the exact position
+it left off rather than restarting.
 
 **Sound effects**: drop audio files into `%LOCALAPPDATA%\StreaMuse\dj-sfx\` and, with **Sound effects**
-ticked on in Settings, the plugin occasionally picks one at random and mixes it in right on the beat of
+ticked on in Settings, the mixer occasionally picks one at random and mixes it in right on the beat of
 a transition - an accent, not a constant thing. Nothing to name or configure per file; it just picks
 from whatever's in the folder. There's nothing in that folder by default - it only plays what you put
 there yourself.

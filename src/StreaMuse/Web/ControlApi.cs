@@ -1,5 +1,6 @@
 using System.Text.Json;
 using StreaMuse.Deps;
+using StreaMuse.Dj;
 using StreaMuse.Media;
 using StreaMuse.Settings;
 using StreaMuse.Sources;
@@ -19,7 +20,7 @@ public static class ControlApi
         var discovery = app.Services.GetRequiredService<DiscoveryService>();
         var pipeline = app.Services.GetRequiredService<Media.StreamPipeline>();
         var tunnel = app.Services.GetRequiredService<Tunnel.CloudflaredTunnel>();
-        var djHost = app.Services.GetRequiredService<DjAddonHost>();
+        var dj = app.Services.GetRequiredService<DjAddon>();
 
         // Explicit port guard so a future listener change cannot silently widen the surface.
         app.Use(async (ctx, next) =>
@@ -61,7 +62,7 @@ public static class ControlApi
             hub.SetLocalUrl(HlsEndpoint.LocalUrl(publicPort, settings.StreamKey));
             hub.Log(LineLevel.Info, "settings saved - encoder changes apply on next start");
 
-            if (djHost.Addon is not null && settings.DjAddonEnabled) _ = deps.EnsureYtDlpAsync();
+            if (settings.DjAddonEnabled) _ = deps.EnsureYtDlpAsync();
 
             return Results.Json(settings, StateHub.Json);
         });
@@ -92,51 +93,8 @@ public static class ControlApi
             return Results.Ok();
         });
 
-        app.MapGet("/api/plugins", () => Results.Json(new
-        {
-            installed = DjAddonHost.Installed(),
-            loaded = djHost.LoadedFrom
-        }, StateHub.Json));
-
-        // Installing a plugin means running someone else's code inside this process; there is no
-        // sandbox and cannot meaningfully be one. This endpoint is loopback-only like the rest of the
-        // control API, so the trust boundary is "whoever is at this machine", same as copying the file
-        // into the folder by hand.
-        app.MapPost("/api/plugins/install", async (HttpContext ctx) =>
-        {
-            if (!ctx.Request.HasFormContentType) return Results.BadRequest();
-
-            var form = await ctx.Request.ReadFormAsync();
-            var file = form.Files.GetFile("plugin");
-            if (file is null || file.Length == 0) return Results.Problem("no file was uploaded");
-
-            try
-            {
-                await using var stream = file.OpenReadStream();
-                var message = DjAddonHost.Install(file.FileName, stream);
-
-                hub.Log(LineLevel.Info, $"plugin: {message}");
-
-                // With nothing loaded yet this picks the new plugin up immediately; with one already
-                // running it is a no-op and the panel asks for a restart instead.
-                var activated = djHost.TryLoadInstalled();
-                if (activated) hub.SetDj(djHost.Addon?.Snapshot());
-
-                return Results.Json(new { message, activated, restartRequired = !activated }, StateHub.Json);
-            }
-            catch (Exception ex)
-            {
-                hub.Log(LineLevel.Error, $"plugin install failed: {ex.Message}");
-                return Results.Problem(ex.Message);
-            }
-        });
-
-        // Always mapped, guarded per call rather than at startup: a plugin installed while the app is
-        // running is activated immediately, and routes decided at startup would 404 for it.
         app.MapPost("/api/dj/request", async (HttpContext ctx) =>
         {
-            if (djHost.Addon is not { } dj) return Results.Problem("no DJ plugin is installed");
-
             var body = await JsonSerializer.DeserializeAsync<DjRequestBody>(ctx.Request.Body, StateHub.Json);
             var query = body?.Query?.Trim();
             if (string.IsNullOrEmpty(query)) return Results.BadRequest();
@@ -150,8 +108,6 @@ public static class ControlApi
 
         app.MapPost("/api/dj/skip", () =>
         {
-            if (djHost.Addon is not { } dj) return Results.Problem("no DJ plugin is installed");
-
             dj.SkipCurrent();
             hub.SetDj(dj.Snapshot());
             return Results.Ok();
@@ -161,14 +117,14 @@ public static class ControlApi
         // and only re-fetch when DjSnapshot.ArtworkVersion actually changes.
         app.MapGet("/api/dj/art", (HttpContext ctx) =>
         {
-            var bytes = djHost.Addon?.CurrentArtwork();
+            var bytes = dj.CurrentArtwork();
             if (bytes is null || bytes.Length == 0) return Results.NotFound();
 
             ctx.Response.Headers.CacheControl = "public, max-age=31536000, immutable";
             return Results.File(bytes, SniffImageType(bytes));
         });
 
-        hub.SetDj(djHost.Addon?.Snapshot());
+        hub.SetDj(dj.Snapshot());
 
         app.Map("/ws", async (HttpContext ctx) =>
         {

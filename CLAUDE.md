@@ -32,13 +32,10 @@ dotnet run --project src/StreaMuse             # build + run
 
 StreaMuse.exe --probe                          # dump every audio session and SMTC media session
 StreaMuse.exe --test-capture [seconds]         # record the resolved source to WAV, report drift
-
-dotnet build src/StreaMuse.DjAddon/StreaMuse.DjAddon.csproj   # build the optional DJ addon
 ```
 
-The addon builds to its own `StreaMuse.DjAddon.dll`, separate from the main exe. To enable it, copy
-that DLL (from `src/StreaMuse.DjAddon/bin/<config>/net10.0-windows10.0.19041.0/`) into
-`%LOCALAPPDATA%\StreaMuse\plugins\`, restart StreaMuse, and turn on "Enable DJ mixing" in Settings.
+DJ mixing (`src/StreaMuse/Dj/`) is part of this one project now, not a separate build - turn on
+"Enable DJ mixing" in Settings and restart if the stream is already running.
 
 `.github/workflows/build.yml` builds the release exe: self-contained and single-file, so the whole
 app ships as one file that runs without a .NET install. `IncludeNativeLibrariesForSelfExtract` is
@@ -298,41 +295,25 @@ before the first paint and wherever WebView2 lags a resize. The page posts every
 only resolves the setting itself - `Auto` against the registry's `AppsUseLightTheme` - for the frames
 before the page has loaded.
 
-## DJ addon
+## DJ mixing (`src/StreaMuse/Dj/`)
 
-An optional module lives at `src/StreaMuse.DjAddon/`, built to its own DLL and never referenced by
-the main project. `IDjAddon` (`Media/IDjAddon.cs`) is the entire compile-time surface between the
-two; everything else - the queue, fetch logic, audition, beat detection, time-stretching - lives only
-in the addon assembly. `DjAddonHost` scans `%LOCALAPPDATA%\StreaMuse\plugins` for *any* assembly
-implementing `IDjAddon` (not a fixed file name) and loads the first one via `AssemblyLoadContext`;
-with nothing installed, `StateHub`'s `dj` snapshot field is null and the panel's DJ card stays hidden,
-which is the whole mechanism behind shipping mixing separately from the app.
+Built into the main app - a plain `StreaMuse.Dj.DjAddon` instance constructed once in `Program.cs` and
+handed around as a singleton (`StreamPipeline`, `CoverFrameRenderer`, `ControlApi` all take it as a
+constructor parameter), not a plugin loaded from disk. It used to ship as a separately-built DLL
+(`StreaMuse.DjAddon.dll`) loaded at runtime via `AssemblyLoadContext` into a `%LOCALAPPDATA%\StreaMuse\
+plugins` folder, alongside a generic plugin-install mechanism (`POST /api/plugins/install`, a Settings
+UI panel); both were removed once the DJ was the only thing that ever used them; `DjAddonEnabled` in
+Settings is now the only on/off switch, checked live by `DjAddon.RequestAsync`/`StreamPipeline.
+MixBlock` rather than by whether anything is loaded at all. The class still takes an `Initialize
+(DjAddonContext)` call rather than doing setup in a constructor - a leftover from the plugin-contract
+shape that was harmless to keep, since `DjAddonContext` (paths/settings/callbacks bundled once at
+startup, `Media/DjAddonContext.cs`) is still a clean way to hand it what it needs from the rest of the
+app without a direct dependency on `AppSettings` or `DiscoveryService`.
 
-- Plugins install through the panel (`POST /api/plugins/install`, a `.dll` or a `.zip`) rather than by
-  hand. A zip is flattened to leaf file names deliberately: `ZipArchiveEntry.FullName` is
-  attacker-controlled and a `../` in it would otherwise write anywhere on disk (zip slip), so only
-  `entry.Name` is used and `SafeTarget` re-checks the result stays inside the plugins folder. Installing
-  a plugin runs someone else's code in-process - there is no sandbox and cannot meaningfully be one;
-  the control API is loopback-only, so the trust boundary is the same as copying the file in by hand.
-- The `/api/dj/*` routes are mapped unconditionally and null-check the addon per call, because a plugin
-  installed while the app is running is activated immediately (`DjAddonHost.TryLoadInstalled`) and
-  routes decided at startup would 404 for it. Loading is one-shot: once an addon is live its `Mix` sits
-  on the audio path, so replacing it under a running stream is not worth the failure modes and the
-  panel asks for a restart instead.
-
-- **A plugin travels with its own dependencies, and three project settings make that work.** The
-  reference to the main project is `Private="false"` *and* `ExcludeAssets="runtime"`; the project sets
-  `CopyLocalLockFileAssemblies=true`. Without the first, a second `StreaMuse.dll` lands in the plugins
-  folder and the `IDjAddon` cast fails at runtime - identical source, distinct type identity to the
-  CLR. Without the last, a class library does not copy its *own* packages to the output at all, so
-  `SoundTouch.Net.dll` never ships and the plugin dies on first use. Without the middle one, the
-  host's packages (NAudio, SkiaSharp) flow through the reference and get carried along too.
-- `PluginLoadContext` resolves the plugin's dependencies from beside it, via
-  `AssemblyDependencyResolver` with a plain sibling-file probe behind it for hand-copied plugins that
-  arrive without their `.deps.json`. It returns null for `StreaMuse` specifically, so the contract
-  always resolves to the running host through `Default` - resolving that one locally is the failure
-  the `Private="false"` above exists to prevent, and the guard means it cannot happen even if someone
-  drops a copy in the folder.
+- The `/api/dj/*` routes are mapped unconditionally now, with no null-check needed - `dj` is always a
+  live instance from the moment the app starts, so a request while mixing is disabled reaches
+  `RequestAsync`, which itself returns `Accepted: false` with "DJ mixing is turned off in Settings"
+  rather than the route 404ing.
 - **`Mix` hangs off the audio pacer, never off the capture callback.** `StreamPipeline.MixBlock` is
   handed to `AudioPacer.RunAsync`, which applies it to each paced block just before writing it, so a
   DJ track advances on wall clock. Wiring it to `capture.SamplesAvailable` instead - the obvious place,
@@ -348,8 +329,10 @@ which is the whole mechanism behind shipping mixing separately from the app.
   search-and-download (`ytsearch1:`), decoded through ffmpeg to raw interleaved float32 PCM. `--print`
   implies `--simulate` in yt-dlp unless `--no-simulate` is also passed - without it, `YtDlpFetcher`
   fetched the title and downloaded nothing at all, reporting success right up until no file existed
-  on disk. There is deliberately no Spotify (or other streaming-service) integration: this addon only
-  ever downloads and mixes in audio itself, it never controls another app's playback.
+  on disk. There is deliberately no Spotify (or other streaming-service) integration for fetching
+  audio: the addon only ever downloads and mixes in audio itself. It does pause/resume Apple Music or
+  Spotify around a request through the OS media transport controls (see below) - that is playback
+  *control*, not a streaming integration, and it never reaches into either app beyond that.
 - Nothing reaches the stream unauditioned. `Mixing/TrackAudition.cs` is the pre-listen a DJ does in
   headphones: it rejects a download that is too short or effectively silent - a video with an empty
   audio track, a fetch that "succeeded" into noise - and finds where the music actually starts so the
@@ -463,7 +446,7 @@ Do not reverse any of these to "simplify" the code without re-measuring: none of
 ## DJ track in the video (`CoverFrameRenderer.CurrentSource`)
 
 The video frame shows the DJ's own track - its title/artist/album and `CurrentArtwork()` - whenever
-`djHost.Addon?.Snapshot().NowMixing` is not null, falling back to the regular SMTC `NowPlaying`/
+`dj.Snapshot().NowMixing` is not null, falling back to the regular SMTC `NowPlaying`/
 `ArtworkStore` otherwise. This is not just cosmetic: once a DJ track fully takes over, `DjAddon` pauses
 Apple Music/Spotify (see above), so their SMTC metadata is frozen for as long as it plays - without
 this the video would keep showing a paused track's cover while a different song is audibly playing.
@@ -514,10 +497,10 @@ of its own waveform.
 
 ## Not yet verified
 
-The Spotify **desktop app** branch has never run - it is not installed on the development machine, so
-that path is written but unexercised, as is iTunes, which the Apple branch also matches. Apple Music
-itself has been verified end to end against real playback on the Store build
-(`AppleInc.AppleMusicWin`). Everything else in the pipeline has been verified the same way.
+iTunes is unexercised - it matches the same Apple branch as Apple Music but is not installed on the
+development machine. Apple Music and the Spotify desktop app have both been verified end to end
+against real playback, including pause/resume around a DJ request. Everything else in the pipeline has
+been verified the same way.
 
 Window sizing has only been exercised on the development machine: one 2560x1440 monitor at 125% with
 a bottom taskbar. The DPI and multi-monitor paths (`OnDpiChanged`, `Screen.FromControl`, a taskbar on

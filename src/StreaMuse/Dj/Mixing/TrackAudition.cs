@@ -1,4 +1,4 @@
-namespace StreaMuse.DjAddon.Mixing;
+namespace StreaMuse.Dj.Mixing;
 
 /// <summary>The pre-listen a DJ does in headphones before the crowd hears anything: check the fetched
 /// track is actually playable, find where the music really starts, and refuse it outright if it isn't

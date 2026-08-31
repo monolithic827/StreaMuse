@@ -1,6 +1,6 @@
-using StreaMuse.DjAddon.Audio;
+using StreaMuse.Dj.Audio;
 
-namespace StreaMuse.DjAddon.Sfx;
+namespace StreaMuse.Dj.Sfx;
 
 /// <summary>A folder the user drops audio files into; the addon picks one at random each time it
 /// wants a sound effect. Deliberately just a folder, not a manifest or a naming convention - the

@@ -2,6 +2,7 @@ using System.Net;
 using Microsoft.Extensions.FileProviders;
 using StreaMuse.App;
 using StreaMuse.Deps;
+using StreaMuse.Dj;
 using StreaMuse.Settings;
 using StreaMuse.Media;
 using StreaMuse.Sources;
@@ -35,7 +36,6 @@ internal static class Program
         Directory.CreateDirectory(Paths.ConfigDir);
         Directory.CreateDirectory(Paths.DataDir);
         Directory.CreateDirectory(Paths.HlsDir);
-        Directory.CreateDirectory(Paths.PluginsDir);
         Directory.CreateDirectory(Paths.DjCacheDir);
         Directory.CreateDirectory(Paths.DjSfxDir);
 
@@ -49,15 +49,15 @@ internal static class Program
         var discovery = new DiscoveryService(settings, hub, artwork);
         var tunnel = new CloudflaredTunnel(settings, hub, deps, publicPort);
 
-        var djHost = new DjAddonHost();
-        djHost.TryLoad(BuildDjAddonContext(settings, deps, hub, djHost, discovery), hub);
+        var dj = new DjAddon();
+        dj.Initialize(BuildDjAddonContext(settings, deps, hub, dj, discovery));
 
-        var pipeline = new StreamPipeline(settings, hub, deps, discovery, artwork, tunnel, djHost);
+        var pipeline = new StreamPipeline(settings, hub, deps, discovery, artwork, tunnel, dj);
 
         discovery.TargetChanged += pipeline.OnTargetChanged;
 
         var app = BuildWebApp(
-            args, settings, hub, deps, artwork, discovery, tunnel, pipeline, djHost, controlPort, publicPort);
+            args, settings, hub, deps, artwork, discovery, tunnel, pipeline, dj, controlPort, publicPort);
 
         hub.SetLocalUrl(HlsEndpoint.LocalUrl(publicPort, settings.StreamKey));
 
@@ -75,7 +75,7 @@ internal static class Program
             try
             {
                 await deps.EnsureAllAsync(lifetime.Token);
-                if (djHost.Addon is not null && settings.DjAddonEnabled)
+                if (settings.DjAddonEnabled)
                 {
                     await deps.EnsureYtDlpAsync(lifetime.Token);
                 }
@@ -91,13 +91,13 @@ internal static class Program
         using var window = new MainWindow($"http://127.0.0.1:{controlPort}/", hub, settings);
         Application.Run(window);
 
-        Shutdown(lifetime, pipeline, djHost, app, hub);
+        Shutdown(lifetime, pipeline, dj, app, hub);
     }
 
-    /// <summary>Bundles the paths/settings/callbacks a loaded addon needs. Built once at startup;
-    /// the Func fields let it keep reading live values (ffmpeg/yt-dlp may still be downloading).</summary>
+    /// <summary>Bundles the paths/settings/callbacks the DJ mixer needs. Built once at startup; the
+    /// Func fields let it keep reading live values (ffmpeg/yt-dlp may still be downloading).</summary>
     private static Media.DjAddonContext BuildDjAddonContext(
-        AppSettings settings, DependencyManager deps, StateHub hub, DjAddonHost djHost, DiscoveryService discovery) =>
+        AppSettings settings, DependencyManager deps, StateHub hub, DjAddon dj, DiscoveryService discovery) =>
         new(
             Capture.ProcessLoopbackCapture.SampleRate,
             Capture.ProcessLoopbackCapture.Channels,
@@ -108,7 +108,7 @@ internal static class Program
             message => hub.Log(LineLevel.Warn, message),
             message => hub.Log(LineLevel.Error, message),
             () => new Media.DjAddonSettings(settings.DjAddonEnabled, settings.CrossfadeSeconds, settings.DjSfxEnabled),
-            () => hub.SetDj(djHost.Addon?.Snapshot()),
+            () => hub.SetDj(dj.Snapshot()),
             discovery.TryPauseSourceAsync,
             discovery.TryResumeSourceAsync,
             Paths.DjSfxDir);
@@ -121,13 +121,13 @@ internal static class Program
     private static void Shutdown(
         CancellationTokenSource lifetime,
         StreamPipeline pipeline,
-        DjAddonHost djHost,
+        DjAddon dj,
         WebApplication app,
         StateHub hub)
     {
         Attempt(hub, "cancel background work", lifetime.Cancel);
         Attempt(hub, "stop the stream", () => pipeline.StopAsync().GetAwaiter().GetResult());
-        Attempt(hub, "shut down the DJ addon", djHost.Shutdown);
+        Attempt(hub, "shut down the DJ mixer", dj.Shutdown);
         Attempt(hub, "stop the web host",
             () => app.StopAsync(TimeSpan.FromSeconds(3)).GetAwaiter().GetResult());
     }
@@ -153,7 +153,7 @@ internal static class Program
         DiscoveryService discovery,
         CloudflaredTunnel tunnel,
         StreamPipeline pipeline,
-        DjAddonHost djHost,
+        DjAddon dj,
         int controlPort,
         int publicPort)
     {
@@ -177,7 +177,7 @@ internal static class Program
         builder.Services.AddSingleton(discovery);
         builder.Services.AddSingleton(tunnel);
         builder.Services.AddSingleton(pipeline);
-        builder.Services.AddSingleton(djHost);
+        builder.Services.AddSingleton(dj);
 
         var app = builder.Build();
 

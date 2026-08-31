@@ -1,4 +1,5 @@
 using SkiaSharp;
+using StreaMuse.Dj;
 using StreaMuse.Settings;
 using StreaMuse.Sources;
 using StreaMuse.State;
@@ -7,7 +8,7 @@ namespace StreaMuse.Media;
 
 /// <summary>Draws the video track as JPEG frames pushed down a pipe, so the picture can change
 /// mid-stream without restarting ffmpeg and breaking the playlist.</summary>
-public sealed class CoverFrameRenderer(AppSettings settings, ArtworkStore artwork, StateHub hub, DjAddonHost djHost)
+public sealed class CoverFrameRenderer(AppSettings settings, ArtworkStore artwork, StateHub hub, DjAddon dj)
 {
     private const int JpegQuality = 88;
 
@@ -46,7 +47,7 @@ public sealed class CoverFrameRenderer(AppSettings settings, ArtworkStore artwor
     /// showing the paused track's cover while a different song plays audibly underneath it.</summary>
     private (NowPlaying Now, byte[]? Artwork, long ArtworkVersion, bool IsRequest) CurrentSource()
     {
-        if (djHost.Addon?.SnapshotWithArtwork() is ({ NowMixing: { } mixing } snapshot, var djArt))
+        if (dj.SnapshotWithArtwork() is ({ NowMixing: { } mixing } snapshot, var djArt))
         {
             var now = new NowPlaying(
                 mixing.Title, mixing.Artist, snapshot.Album, true,

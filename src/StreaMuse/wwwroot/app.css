@@ -644,7 +644,92 @@ body.log-closed .health-panel {
 
 /* ── dj window ─────────────────────────────────────────────────────────────
    Its own top-level window, so it lays out to the viewport rather than to the
-   panel's grid. */
+   panel's grid. Pink accent, scoped to this window only: every component
+   class (button, card, tag, range input, ...) reads its colour off the same
+   --color-accent* custom properties the main panel uses, and a custom
+   property declared directly on an element always wins over one inherited
+   from an ancestor - so redeclaring the whole ramp on .dj-body repaints
+   every one of those components pink here without touching --color-accent
+   anywhere else. data-theme lives on <html>, not <body>, so the dark variant
+   needs its own higher-specificity selector reaching back up to :root,
+   mirroring how styles.css/app.css already switch the base ramp for dark
+   mode - see the ramp comment up top. */
+.dj-body {
+  --color-accent: #d6336c;
+  --color-accent-2: #e6699b;
+
+  --color-accent-100: #fff0f6;
+  --color-accent-200: #ffdeeb;
+  --color-accent-300: #fcc2d7;
+  --color-accent-400: #faa2c1;
+  --color-accent-500: #f783ac;
+  --color-accent-600: #f06595;
+  --color-accent-700: #e64980;
+  --color-accent-800: #d6336c;
+  --color-accent-900: #a61e4d;
+
+  --color-accent-2-100: #fff0f6;
+  --color-accent-2-200: #ffdeeb;
+  --color-accent-2-300: #fcd9e8;
+  --color-accent-2-400: #f9b8d4;
+  --color-accent-2-500: #f295bd;
+  --color-accent-2-600: #e572a2;
+  --color-accent-2-700: #cc5387;
+  --color-accent-2-800: #a53b68;
+  --color-accent-2-900: #7a2a4d;
+}
+
+:root[data-theme="dark"] .dj-body {
+  --color-accent: #f06595;
+  --color-accent-2: #e08bb0;
+
+  --color-accent-100: #4a1029;
+  --color-accent-200: #6b1a3d;
+  --color-accent-300: #8f2450;
+  --color-accent-400: #b23063;
+  --color-accent-500: #cc4a7c;
+  --color-accent-600: #e46b96;
+  --color-accent-700: #ef8fae;
+  --color-accent-800: #f7b8cc;
+  --color-accent-900: #fff0f6;
+
+  --color-accent-2-100: #3d1830;
+  --color-accent-2-200: #562142;
+  --color-accent-2-300: #742c57;
+  --color-accent-2-400: #93386c;
+  --color-accent-2-500: #ac4d80;
+  --color-accent-2-600: #c66f97;
+  --color-accent-2-700: #dd93b0;
+  --color-accent-2-800: #f0bfd2;
+  --color-accent-2-900: #fff0f6;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .dj-body {
+    --color-accent: #f06595;
+    --color-accent-2: #e08bb0;
+
+    --color-accent-100: #4a1029;
+    --color-accent-200: #6b1a3d;
+    --color-accent-300: #8f2450;
+    --color-accent-400: #b23063;
+    --color-accent-500: #cc4a7c;
+    --color-accent-600: #e46b96;
+    --color-accent-700: #ef8fae;
+    --color-accent-800: #f7b8cc;
+    --color-accent-900: #fff0f6;
+
+    --color-accent-2-100: #3d1830;
+    --color-accent-2-200: #562142;
+    --color-accent-2-300: #742c57;
+    --color-accent-2-400: #93386c;
+    --color-accent-2-500: #ac4d80;
+    --color-accent-2-600: #c66f97;
+    --color-accent-2-700: #dd93b0;
+    --color-accent-2-800: #f0bfd2;
+    --color-accent-2-900: #fff0f6;
+  }
+}
 
 .dj-body {
   height: 100vh;

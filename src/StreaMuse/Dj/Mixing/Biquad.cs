@@ -1,4 +1,4 @@
-namespace StreaMuse.DjAddon.Mixing;
+namespace StreaMuse.Dj.Mixing;
 
 /// <summary>A second-order IIR section (RBJ cookbook coefficients), one filter state per channel.
 /// Used to split a track into low and high bands so the two decks can trade the bass between them -

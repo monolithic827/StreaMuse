@@ -37,9 +37,9 @@ function render(dj) {
   const skip = document.getElementById('dj-skip');
 
   if (!dj) {
-    title.textContent = 'DJ plugin not loaded';
+    title.textContent = 'DJ mixing is off';
     artist.textContent = '';
-    status.textContent = 'Install it in Settings → Plugins.';
+    status.textContent = 'Turn it on in Settings.';
     tag.textContent = 'off';
     skip.disabled = true;
     positionAnchor = { seconds: 0, atMs: 0, duration: 0, playing: false };

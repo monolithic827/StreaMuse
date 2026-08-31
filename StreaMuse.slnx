@@ -1,6 +1,5 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/StreaMuse/StreaMuse.csproj" />
-    <Project Path="src/StreaMuse.DjAddon/StreaMuse.DjAddon.csproj" />
   </Folder>
 </Solution>

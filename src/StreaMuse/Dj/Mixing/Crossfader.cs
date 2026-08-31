@@ -1,4 +1,4 @@
-namespace StreaMuse.DjAddon.Mixing;
+namespace StreaMuse.Dj.Mixing;
 
 /// <summary>Equal-power gain law: at t=0.5 both signals are attenuated by ~3dB rather than 6dB, so
 /// the perceived loudness stays roughly constant through the middle of the fade.</summary>

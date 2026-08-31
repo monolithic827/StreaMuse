@@ -1,39 +1,7 @@
 namespace StreaMuse.Media;
 
-/// <summary>The entire boundary between the main app and the optional DJ addon. The addon assembly
-/// is loaded from plugins/ at runtime (see DjAddonHost) and never compiled against by anything but
-/// this file, so nothing here may change in a way an already-built addon DLL couldn't tolerate
-/// without a matching contract version.</summary>
-public interface IDjAddon
-{
-    void Initialize(DjAddonContext context);
-
-    Task<DjRequestResult> RequestAsync(string query, CancellationToken ct);
-
-    void SkipCurrent();
-
-    DjSnapshot Snapshot();
-
-    /// <summary>Called from the capture callback with every batch of live samples; returns what
-    /// actually reaches AudioPacer.Push. Runs on the capture thread, so it must never block on I/O -
-    /// fetching and decoding happen ahead of time in RequestAsync, not here.</summary>
-    float[] Mix(float[] liveSamples);
-
-    /// <summary>Cover art for the track playing now, as the bytes the service returned. Served over
-    /// HTTP rather than embedded in the snapshot, so it stays out of every state broadcast - see
-    /// ArtworkStore for the same reasoning on the host side.</summary>
-    byte[]? CurrentArtwork();
-
-    /// <summary>Snapshot and artwork read together, for a caller - the video overlay - that needs both
-    /// to describe the same track. Calling Snapshot() and CurrentArtwork() separately lets a transition
-    /// land between the two reads and pair one track's title with another's cover for a frame.</summary>
-    (DjSnapshot Snapshot, byte[]? Artwork) SnapshotWithArtwork();
-
-    void Shutdown();
-}
-
-/// <summary>Everything the addon needs from the host, handed once at load time. Paths are Funcs
-/// because ffmpeg/yt-dlp may still be downloading when the addon loads.</summary>
+/// <summary>Everything the DJ mixer needs from the rest of the app, handed once at startup. Paths are
+/// Funcs because ffmpeg/yt-dlp may still be downloading when the mixer is constructed.</summary>
 public sealed class DjAddonContext(
     int sampleRate,
     int channels,
@@ -73,16 +41,16 @@ public sealed class DjAddonContext(
     public string SfxDir { get; } = sfxDir;
 }
 
-/// <summary>Config the addon reads live from AppSettings, copied out so the addon assembly never
-/// needs a reference to the host's Settings project.</summary>
+/// <summary>Config the mixer reads live from AppSettings, copied out to keep DjAddon itself free of a
+/// direct AppSettings dependency.</summary>
 public sealed record DjAddonSettings(bool Enabled, double CrossfadeSeconds, bool SfxEnabled);
 
 public sealed record DjRequestResult(bool Accepted, string? Error, DjQueueEntry? Entry);
 
 public sealed record DjQueueEntry(string Id, string Query, string Title, string Artist, string Status);
 
-/// <summary>Serializable state the panel renders. The host never sends this at all when no addon is
-/// loaded, which is what makes the DJ card feature-detected rather than settings-detected.</summary>
+/// <summary>Serializable state the panel renders. Null while DJ mixing is disabled in Settings, which
+/// is what makes the DJ card feature-detected rather than always shown.</summary>
 public sealed record DjSnapshot(
     IReadOnlyList<DjQueueEntry> Queue,
     DjQueueEntry? NowMixing,

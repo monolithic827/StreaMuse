@@ -1,6 +1,6 @@
 using SoundTouch;
 
-namespace StreaMuse.DjAddon.Mixing;
+namespace StreaMuse.Dj.Mixing;
 
 /// <summary>Tempo and beat positions, from SoundTouch's <see cref="BpmDetect"/>.
 ///
