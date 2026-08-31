@@ -555,6 +555,24 @@ document.querySelector('[data-tunnel-button]').addEventListener('click', async (
 // The decks live in their own window (DjWindow); the host opens it.
 document.getElementById('btn-dj').onclick = () => toHost('openDj');
 
+// Seven clicks on the wordmark within 1.5s opens RetroWindow. No affordance anywhere hints this
+// exists - that's the point - so it resets on its own rather than via anything visible.
+(() => {
+  let clicks = 0;
+  let resetTimer = null;
+
+  document.querySelector('.nav-brand').addEventListener('click', () => {
+    clicks++;
+    clearTimeout(resetTimer);
+    resetTimer = setTimeout(() => { clicks = 0; }, 1500);
+
+    if (clicks >= 7) {
+      clicks = 0;
+      toHost('openRetro');
+    }
+  });
+})();
+
 for (const button of document.querySelectorAll('[data-copy]')) {
   button.addEventListener('click', async () => {
     const url = state.tunnel.publicUrl || state.localUrl || '';
