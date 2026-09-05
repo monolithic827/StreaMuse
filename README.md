@@ -1,18 +1,19 @@
 # StreaMuse
 
-Re-streams what Apple Music or Spotify is playing on this PC as an HLS (`.m3u8`) stream, and
-publishes it worldwide through a Cloudflare tunnel. No OBS, no Docker.
+Turns this PC into a speaker that Apple Music and Spotify can play to, and re-streams whatever they
+send as an HLS (`.m3u8`) stream published worldwide through a Cloudflare tunnel. No OBS, no Docker.
 
-It attaches directly to the music app's audio with WASAPI **process loopback**, reads now-playing
-metadata from the Windows media transport controls, renders a cover-art video track, and muxes both
-into 1-second mpegts HLS segments - the format VRChat's AVPro player handles reliably.
+It appears in Apple Music's AirPlay menu as a speaker and in Spotify's device list as a Connect
+device. The audio, the track info and the cover art all arrive over that one connection, so the
+now-playing info can never belong to some other app. It renders a cover-art video track and muxes
+both into 1-second mpegts HLS segments - the format VRChat's AVPro player handles reliably.
 
 ```
- ┌──────────────────────────── StreaMuse.exe ─────────────────────────────┐
- │  process loopback (WASAPI) ──> AudioPacer ──┐                          │
- │  media transport controls  ──> CoverFrames ─┴──> ffmpeg ──> hls/*.ts   │
+ ┌──────────────────────────── StreaMuse ─────────────────────────────────┐
+ │  Apple Music ──AirPlay──> RAOP receiver  ─┐                            │
+ │  Spotify     ──Connect──> go-librespot   ─┴──> ffmpeg ──> hls/*.ts     │
  │                                                                        │
- │  :7788 loopback  control panel (WebView2)                              │
+ │  :7788 loopback  control panel                                         │
  │  :7789 loopback  /live/{key}/index.m3u8  <── cloudflared ──> internet  │
  └────────────────────────────────────────────────────────────────────────┘
 ```
@@ -20,63 +21,72 @@ into 1-second mpegts HLS segments - the format VRChat's AVPro player handles rel
 ## Running it
 
 ```powershell
-dotnet run --project src/StreaMuse
+uv run streamuse
 ```
 
-On first launch it downloads `ffmpeg.exe` and `cloudflared.exe` into
+On first launch it downloads `ffmpeg.exe`, `cloudflared.exe` and `go-librespot.exe` into
 `%LOCALAPPDATA%\StreaMuse\bin` (~150 MB, once). Progress shows in the Stream health log.
 
-Then: start playing music → pick the source → **Start stream** → **Start tunnel** → copy the URL.
+Then:
+
+1. Pick **Apple Music** or **Spotify** in the panel.
+2. In Apple Music, open the AirPlay menu and choose **StreaMuse**. In Spotify, open the device list
+   and choose **StreaMuse**. (Rename it under Settings → Receiver name.)
+3. **Start stream**, then **Start tunnel**, and copy the URL.
 
 To publish automatically whenever you start streaming, tick *Start the tunnel automatically* in
 Settings.
+
+Because your music now plays *to* StreaMuse rather than out of your speakers, you hear it through the
+stream. Nothing else on the machine is captured or muted.
 
 ## What the panel controls
 
 | | |
 |---|---|
-| **Audio source** | Apple Music / Spotify / External, plus a **Capture target** picker (External only) listing every process currently playing audio |
+| **Audio source** | Apple Music or Spotify, and whether a sender is connected right now |
+| **Now playing** | Cover, track, progress, and play/pause/next/previous sent back to the app |
 | **Stream** | Start/stop, live status, the public URL with a copy button, and tunnel start/stop |
-| **Capture** | The attached process and a live level meter fed from the captured samples |
+| **Receiver** | Which client is connected and a live level meter fed from the received audio |
 | **Stream health** | Encoder settings, uptime, dropped frames, and a rolling log from every component |
-| **Settings** | Stream key, resolution, frame rate, bitrates, text overlay, tunnel mode, dependency status |
+| **Settings** | Receiver name, stream key, resolution, frame rate, bitrates, text overlay, tunnel mode |
 
-Encoder settings apply on the next start; source and target changes take effect immediately.
+Encoder settings apply on the next start; the source can be switched at any time.
 
-## The three sources
+## Requirements
 
-**Apple Music** and **Spotify** mean the dedicated desktop app. That app's process is the only
-thing on Windows that identifies the source with certainty, so both options are offered *only*
-while that process is running and are struck through otherwise. Choosing one and then closing the
-app falls back to External - your stored preference is kept, so reinstalling restores it.
-
-**External** is everything else. You pick the process and the panel states exactly what it attached
-to. Capture covers that process and its children, so you get everything it plays - for a web player
-that means the whole browser rather than one tab, since nothing in Windows reports which site a tab
-is playing.
-
-## How now-playing info works
-
-Audio and metadata come from two unrelated places: audio is WASAPI process loopback on the chosen
-process, while track, artist, album and artwork come from the Windows media transport controls - the
-system behind the volume-key overlay, which browsers publish to via the web MediaSession API.
-
-Because they are independent, several apps can be reporting a track while only one is captured.
-Metadata is therefore used only when its session genuinely belongs to the captured process;
-otherwise the panel says *no track info reported* rather than guessing.
+- Windows 11, Apple Music from the Microsoft Store and/or the Spotify desktop app.
+- Spotify Connect needs **Spotify Premium**.
+- The first time a sender connects from another device, Windows Firewall will ask to allow StreaMuse
+  on the private network. Everything on this same PC works without it.
 
 ## Security
 
-**The tunnel only exposes the stream.** The control panel, its API, and the WebSocket listen on a
+**The tunnel only exposes the stream.** The control panel, its API and the WebSocket listen on a
 separate loopback port that cloudflared never sees. Everything on the public port other than
-`/live/{key}/*.m3u8|.ts` returns 404 - verified, including path traversal attempts.
+`/live/{key}/` - the playlist, the segments, the listener page, and its now-playing feed - returns
+404, verified including path traversal attempts. With the stream stopped the public feed reports
+nothing at all, even while the tunnel is still up.
 
 ## Diagnostics
 
 ```powershell
-StreaMuse.exe --probe              # every audio session and media session Windows can see
-StreaMuse.exe --test-capture 20    # record 20s of the resolved source to a WAV and report drift
+uv run streamuse --test-receiver apple 20     # listen for 20s and report what arrived
+uv run streamuse --test-receiver spotify 20
 ```
 
-`--test-capture` is the fastest way to answer "why is my stream silent": it reports the peak level,
-how much silence was filled, and how far the written audio drifted from wall clock.
+This is the fastest way to answer "why is my stream silent": it says whether a sender ever connected,
+what track it reported, the peak level, how much of the audio was silence, and how far it drifted
+from wall clock - and writes what it heard to a WAV.
+
+## Building
+
+```powershell
+uv run pyinstaller streamuse.spec --noconfirm   # dist/StreaMuse.exe
+```
+
+CI builds the same one-file exe on every push and attaches it to a release on a `v*` tag.
+
+**Spotify needs one extra step for now.** go-librespot's Windows build cannot write audio to a pipe;
+`vendor/go-librespot/` holds the small patch that fixes it and the steps to build and publish the
+binary. Until that release exists, Spotify is shown as unavailable and Apple Music works normally.

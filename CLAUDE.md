@@ -4,9 +4,15 @@ This file provides guidance to AI coding agents when working with code in this r
 
 ## What this is
 
-StreaMuse re-streams whatever a Windows app is playing as an HLS (`.m3u8`) stream and publishes it
-through a Cloudflare tunnel. One .NET 10 `WinExe` hosts everything: ASP.NET Core, a WinForms
-frameless window, and a WebView2 showing the control panel. Windows-only by design.
+StreaMuse **is the speaker**. It advertises itself as an AirPlay device that Apple Music streams to,
+and as a Spotify Connect device that the Spotify app hands playback to, then re-streams what arrives
+as an HLS (`.m3u8`) stream published through a Cloudflare tunnel. One Python package hosts
+everything: two aiohttp servers, the receivers, the encoder pipeline, and a pywebview window showing
+the control panel. Windows-only by design.
+
+Because audio, metadata and artwork all arrive over the same session, a track can never be
+attributed to the wrong source - which is the whole reason for the receiver design over the WASAPI
+process-loopback capture it replaced.
 
 ## Style
 
@@ -27,270 +33,216 @@ factual, and extend an existing section rather than adding one.
 ## Commands
 
 ```powershell
-dotnet build src/StreaMuse/StreaMuse.csproj    # build
-dotnet run --project src/StreaMuse             # build + run
+uv sync                                        # install
+uv run streamuse                               # run
 
-StreaMuse.exe --probe                          # dump every audio session and SMTC media session
-StreaMuse.exe --test-capture [seconds]         # record the resolved source to WAV, report drift
+uv run streamuse --test-receiver apple 20      # run one receiver alone for 20s and report
+uv run streamuse --test-receiver spotify 20
+
+uv run pyinstaller streamuse.spec --noconfirm  # dist/StreaMuse.exe
 ```
 
-`.github/workflows/build.yml` builds the release exe: self-contained and single-file, so the whole
-app ships as one file that runs without a .NET install. `IncludeNativeLibrariesForSelfExtract` is
-what pulls `libSkiaSharp.dll` and `WebView2Loader.dll` inside; they load from
-`%TEMP%\.net\StreaMuse\` at runtime. `wwwroot` gets there a different way - the bundler takes
-assemblies, not content - so it is an `EmbeddedResource` served through a
-`ManifestEmbeddedFileProvider` set as the web root, and `StaticWebAssetsEnabled` is off so the asset
-manifest does not ship either. Editing the panel needs a rebuild for the same reason.
+`.github/workflows/build.yml` produces that same one-file exe. `wwwroot` is data rather than code, so
+the spec adds it explicitly and `paths.wwwroot()` resolves it identically from a checkout and from the
+unpacked bundle; editing the panel needs no rebuild when running from source.
 
-There is **no test project**. Verification is done by running the app and checking real behaviour;
-the two diagnostic modes above exist for that. Useful techniques used in practice:
+There is **no test project**. Verification is done by running the app and checking real behaviour.
+Useful techniques used in practice:
 
 - `curl http://127.0.0.1:7788/api/state` - full state as JSON; poll it in a loop to catch flapping.
 - Console errors in the panel: `msedge --headless=new --virtual-time-budget=4000 --dump-dom
   http://127.0.0.1:7788/` and grep stderr for `Uncaught`.
-- Screenshot the frameless window with `PrintWindow(hwnd, hdc, 2)` - `PW_RENDERFULLCONTENT` is
-  required to capture WebView2 content, and the capturing script must be DPI-aware.
-- `--test-capture` answers "why is the stream silent" fastest: it reports peak level, how much
-  silence was filled, and drift from wall clock.
+- Screenshot the window with `PrintWindow(hwnd, hdc, 2)` - `PW_RENDERFULLCONTENT` is required to
+  capture the web view, the capturing script must be DPI-aware, and the handle has to come from the
+  process's `MainWindowHandle` (`FindWindow` by title does not find it).
+- A synthetic RAOP sender is the fastest way to exercise the whole Apple path without Apple Music:
+  drive the RTSP handshake, then push AES-encrypted ALAC packets over UDP. That is how the receiver
+  was verified end to end.
+- `--test-receiver` answers "why is the stream silent" fastest: it reports whether a sender ever
+  connected, what it said, peak level, silence share and drift from wall clock, and writes a WAV.
 
 ## Architecture
 
 ```
-DiscoveryService (1 Hz) ──> StateHub ──> WebSocket ──> control panel
-      │  audio sessions + SMTC metadata
-      ▼
-SourceResolver ──> capture pid
-      │
-StreamPipeline:  ProcessLoopbackCapture ──> AudioPacer ─┐
-                 CoverFrameRenderer ──────> VideoPacer ─┤ (one shared Stopwatch)
-                                                        ▼
-                        \\.\pipe\streamuse-{audio,video} ──> ffmpeg ──> %LOCALAPPDATA%\StreaMuse\hls
-                                                                              │
-                                          :7789 HlsEndpoint <── cloudflared <──┘
+AirPlayReceiver  mDNS _raop._tcp ─ RTSP :5100 ─ RTP udp 6100-6102 ─┐
+SpotifyReceiver  go-librespot.exe ─ \\.\pipe\streamuse-spotify ────┤ only the selected one runs
+                 + its HTTP API on loopback                        │
+                                                                   ▼
+                          track + artwork ──> StateHub ──> WebSocket ──> control panel
+                          PCM s16le 44.1k ──> LevelMeter + AudioPacer ─┐
+                          CoverFrameRenderer ────────────> VideoPacer ─┤ one shared Clock
+                                                                       ▼
+                    tcp://127.0.0.1:{audio,video} ──> ffmpeg ──> %LOCALAPPDATA%\StreaMuse\hls
+                                                                       │
+                                     :7789 public app <── cloudflared <┘
+                                     :7788 control app <── pywebview window
 ```
 
 `StateHub` is the single source of truth. Everything the UI shows arrives in one snapshot pushed
-over the WebSocket; the panel is a pure view and only ever posts intents back (start/stop, settings).
-When adding UI data, put it in the snapshot rather than adding a poll endpoint.
+over the WebSocket; the panel is a pure view and only ever posts intents back (start/stop, settings,
+transport). When adding UI data, put it in the snapshot rather than adding a poll endpoint.
 
-**Two Kestrel ports, and this is a security boundary.** The control API, WebSocket, settings and log
-live on the control port (7788) and must never appear on the other one. Only the public port (7789)
-is handed to cloudflared, and everything it serves sits under `/live/{streamKey}/`, is GET-only, and
-is one of: the HLS playlist and segments, the listener page's own files out of `wwwroot/listen/`,
-`now` (current track as JSON) and `art`. Everything else 404s, including traversal attempts.
+**Both receivers deliver interleaved s16le at 44.1 kHz**, which is what `sources.SAMPLE_RATE`, the
+pacer and ffmpeg's audio input are set to. The encoder still emits 48 kHz AAC, so the output contract
+is unchanged; ffmpeg does the conversion. Do not resample in Python - the pacer counts frames of the
+*source* rate against wall clock, and a second rate to keep honest buys nothing.
 
-The public surface must never serialize `StateSnapshot`. That snapshot carries `NamedTunnelToken` -
-a Cloudflare credential - along with dependency paths that leak the Windows username, pids, process
-names and 200 log lines, and `StateHub.AcceptSocketAsync` sends all of it to any socket that
-connects. `ListenerEndpoint` therefore declares its own `PublicNowPlaying` record and builds it field
-by field, so a field added to the panel's state cannot become public by being adjacent to one. Title,
-artist, album and cover are already rendered into the video, which is why those are the ones it may
-carry - and only *while the video exists*. The tunnel's lifetime is independent of the encoder's
-(separate buttons, plus `AutoTunnel`), so with the stream stopped `now` answers a fixed off-air
-record and `art` 404s; otherwise anyone holding the hostname could poll what the machine plays
-locally. Do not move that gate into the page: `StreamKey` defaults to a constant, so the URL is not
-a secret either.
+**Two ports, and this is a security boundary.** The control API, WebSocket, settings and log live on
+the control port (7788) and must never appear on the other one. Only the public port (7789) is handed
+to cloudflared, and everything it serves sits under `/live/{streamKey}/`, is GET or HEAD only, and is
+one of: the HLS playlist and segments, the listener page's own files out of `wwwroot/listen/`, `now`
+(current track as JSON) and `art`. Everything else 404s, including traversal attempts. They are two
+separate aiohttp applications on two runners, so the boundary is structural rather than a guard.
 
-Nothing on the wire carries a display placeholder. `NowPlaying` holds `""` for a field the source
-did not report, and each of the three views - the panel, the video, the listener page - supplies its
-own text. A sentinel like `"Nothing playing"` reaching the browser makes a panel-only string into
+The public surface must never serialize the state snapshot. That snapshot carries
+`namedTunnelToken` - a Cloudflare credential - along with dependency paths that leak the Windows
+username and 200 log lines. `web/public.py` therefore declares its own now-playing record and builds
+it field by field, so a field added to the panel's state cannot become public by being adjacent to
+one. Title, artist, album and cover are already rendered into the video, which is why those are the
+ones it may carry - and only *while the video exists*. The tunnel's lifetime is independent of the
+encoder's (separate buttons, plus `autoTunnel`), so with the stream stopped `now` answers a fixed
+off-air record and `art` 404s; otherwise anyone holding the hostname could poll what the machine
+plays locally. Do not move that gate into the page: `streamKey` defaults to a constant, so the URL is
+not a secret either.
+
+Nothing on the wire carries a display placeholder. `NowPlaying` holds `""` for a field the source did
+not report, and each of the three views - the panel, the video, the listener page - supplies its own
+text. A sentinel like `"Nothing playing"` reaching the browser makes a panel-only string into
 something the listener page has to string-match, and renaming it there would silently show it as a
 track title.
 
-Both public handlers share `HlsEndpoint.IsSafeName`, and it must stay shared. Rejecting `/`, `\` and
-`..` is not enough on Windows: `Path.Combine` discards its first argument for a drive-relative name,
-so `C:seg.ts` would resolve against drive C's current directory. The name must also not be rooted.
-The listener's asset lookup is additionally confined to the `listen/` subtree and to
-`.html`/`.css`/`.js`, or the control panel's own `index.html` and `app.js` - siblings in the same
-embedded provider - would be reachable through the tunnel. `art` is the one public body whose type
-is *guessed* - `ContentTypeOf` sniffs bytes a third-party app handed to SMTC and falls back to
-`application/octet-stream` - so it is sent `nosniff`; it is same-origin with the page out there.
-
-`ListenerEndpoint` is mapped before `MapPublicHls` because that one terminates for the public port
-and never calls `next()`. It passes anything it does not own through to that 404.
+`web/public.is_safe_name` guards every public filename. Rejecting `/`, `\` and `..` is not enough on
+Windows: a path join discards its first argument for a drive-relative name, so `C:seg.ts` would
+resolve against drive C's current directory. The listener's asset lookup is additionally confined to
+the `listen/` subtree and to `.html`/`.css`/`.js`, or the control panel's own `index.html` and
+`app.js` - siblings in the same folder - would be reachable through the tunnel. `art` is the one
+public body whose type is *guessed* - `content_type_of` sniffs bytes a third-party app sent us and
+falls back to `application/octet-stream` - so it is sent `nosniff`; it is same-origin with the page
+out there.
 
 Both public handlers answer HEAD as well as GET. A page link gets pasted into chat apps whose
 unfurlers probe with HEAD first, and a HEAD that 404s where GET returns 200 makes the link look dead.
-`ListenerEndpoint.SendAsync` is what keeps the two identical: it sets `ContentLength` from the body
-either way and returns before writing it for HEAD. Widening the accepted methods does not widen the
-surface - the route allowlist runs first - but re-check the 404 matrix under both methods if it
-changes again.
+`_send` keeps the two identical by always attaching the body; aiohttp sets `Content-Length` from it
+and drops the body for HEAD itself. Never set `content_length` by hand there - aiohttp raises.
 
 **Cloudflare overrides `Cache-Control` on `.css` and `.js`.** Measured through the named tunnel, a
 `no-cache` on those came back to the client as `max-age=14400`, so a response header cannot be relied
 on to retire an asset: after a rebuild, listeners would run the previous build's script against this
 build's feed for up to four hours. The page therefore names its assets `listen.css?v={v}` /
-`listen.js?v={v}`, `ListenerEndpoint` substitutes a hash of their bytes into the page as it serves
-it, and the assets are sent `immutable`. Only the page itself is `no-cache`, and it is `.html`, which
+`listen.js?v={v}`, `web/public.py` substitutes a hash of their bytes into the page as it serves it,
+and the assets are sent `immutable`. Only the page itself is `no-cache`, and it is `.html`, which
 Cloudflare leaves as `DYNAMIC`. Bust by URL here, never by header.
 
-`ArtworkStore.Version` is a 63-bit long, so it goes to the listener page as a **string**: through
-JSON a number past 2^53 is rounded by `JSON.parse` and the `art?v=` that comes back is not the
-version the host sent. That endpoint compares `v` against the current version and serves `immutable`
-only when they agree, `no-store` when they do not - the cover can change between the poll that named
-a version and the fetch for it, and caching those bytes under the old key pins the wrong cover for a
-year (the panel has the same shape, but it is push-driven over loopback, so its window is
-milliseconds). The comparison is only sound because `ArtworkStore.Current` reads version and bytes
-under one lock. The panel still receives the version as a number: nothing validates it there.
+`ArtworkStore.version` is a 63-bit int, so it goes to the listener page as a **string**: through JSON
+a number past 2^53 is rounded by `JSON.parse` and the `art?v=` that comes back is not the version the
+host sent. That endpoint compares `v` against the current version and serves `immutable` only when
+they agree, `no-store` when they do not - the cover can change between the poll that named a version
+and the fetch for it, and caching those bytes under the old key pins the wrong cover for a year (the
+panel has the same shape, but it is push-driven over loopback, so its window is milliseconds). The
+comparison is only sound because `ArtworkStore.current` reads version and bytes under one lock. The
+panel still receives the version as a number: nothing validates it there.
 
 ## Invariants that are easy to break
 
-**Build**
-- The WebView2 package references its WPF assembly on every net5.0+ target, which wants
-  `WindowsBase` 5.0.0.0. This is a WinForms app, so that is an unresolvable MSB3277 conflict against
-  the runtime's 4.0.0.0 shim. `RemoveWebView2WpfReference` drops the reference; it has to be a
-  target, because the package adds it from its own `.targets` after the project body. Don't fix it
-  with `UseWpf`.
-- `InvariantGlobalization` must stay off. WinForms handles `WM_INPUTLANGCHANGE` by resolving the new
-  keyboard layout's LCID through `CultureInfo.GetCultureInfo`, which throws in invariant mode for
-  anything but the invariant culture, so switching to a Hebrew layout while the window had focus
-  killed the message loop with an unhandled exception. .NET uses Windows' own ICU, so nothing extra
-  ships for it.
-
-**Window chrome**
-- The form is resizable only because `CreateParams` adds `WS_THICKFRAME` back to a `FormBorderStyle.
-  None` window. A `WM_NCHITTEST` of our own cannot work: the WebView2 child window covers the whole
-  client area and takes the mouse first. Keeping the real frame is also what keeps sizing, snapping
-  and maximize on Windows' own code path, so do not strip it again with `WM_NCCALCSIZE`.
-- The title bar's double-click is read from `mousedown`'s `detail`, not from a `dblclick` listener:
-  the first click hands the mouse to the window manager's modal move loop, which consumes the
-  mouse-up, so the page never sees the pair of clicks a `dblclick` needs.
-- Windows maximizes a caption-less window to the whole monitor, not the work area, so it covers the
-  taskbar. `WM_GETMINMAXINFO` restates the maximize rect against `Screen.WorkingArea`, inflated by
-  the frame exactly as Windows inflates its own. Let the base handler run first - it owns the min
-  track size that enforces `MinimumSize` - and rewrite only the two maximize fields.
-- That frame is not accounted for by a `ClientSize` set in the constructor, and WinForms adjusts the
-  height again during load. `MainWindow.OnLoad` therefore restates `ClientSize`, and `OnShown` reads
-  the resulting outer size back as the minimum. Setting either earlier silently opens the page
-  smaller than 1080x820.
-- The minimum is captured from the opening size and stored with the DPI it was measured at, so it
-  scales with the window rather than being recomputed through logical units - a round trip through
-  those truncates and loses a pixel off the floor. It is also capped at what maximizing would give,
-  or on a screen shorter than the window the bottom edge ends up permanently out of reach.
-- The window's minimum height is `1080x820` plus the details pane while it is open, because the pane
-  is laid out below everything else. Only the page can measure the pane, so it posts `detailsHeight`
-  on every change and the host converts CSS pixels with `LogicalToDeviceUnits`. The window gives back
-  height on close only up to what it grew by, or closing the pane resizes a window the user sized.
-
-**Capture**
-- `NAudio.Wasapi` must stay on a `3.0.0-preview` version. Process loopback (`WithProcessLoopback` +
-  `BuildAsync`) does not exist in stable 22.x. Do not "upgrade" it.
-- `WithFormat` is mandatory on that path: `GetMixFormat` returns `E_NOTIMPL` for process loopback,
-  so there is no format to negotiate.
-- NAudio hands over a span onto the WASAPI buffer valid only for the callback - copy before it
-  leaves the capture thread.
-- Process loopback taps the session *after* the audio engine has applied its per-app volume, so the
-  Windows mixer's slider and mute reach the stream. Nothing on our side can undo it: a mute delivers
-  zeros. Playing silently locally means routing the app to another output device, not muting it.
-- `AudioSessionScanner` enumerates *every* active render endpoint, not just the default one, or an
-  app routed to a second device (a virtual cable, say) drops out of election, the target list and
-  the status text. Capture is endpoint-independent, so this is discovery only; one process can
-  appear once per device it renders to, which is why callers group by root pid.
-
 **Pacing (the reason the stream never stalls)**
-- Process loopback delivers *nothing* while the source is paused. `AudioPacer` therefore writes
-  exactly 48 000 frames per second of wall clock, filling silence on underrun, and `VideoPacer`
-  emits a fixed frame rate from the same `Stopwatch`. Both demuxers derive timestamps from data
-  received, so this is also what keeps A/V in sync. Never make either pacer emit on source activity.
-- A pacer only returns when it can no longer write, so its exit has to end the session - that is
-  what `RunPacerAsync` wraps both in. Silence is the *designed* output for a paused source, which
-  means a dead pacer looks identical to a quiet one from the outside - nothing else will notice.
-  Several paths can report one fault (both pacers see the broken pipe, then the encoder exits);
-  `StopCoreAsync` is a no-op once the session is gone, so only the first does anything.
-- Every teardown path in `StreamPipeline` holds `_gate`, including the one the encoder's `Exited`
-  handler takes; `StopCoreAsync` is the ungated body for callers already holding it. Tearing down
-  beside a running `StartAsync` leaves capture attached to a session that no longer exists.
-- Teardown must `DrainSessionAsync` before disposing the pipes or the session's token source, or
-  both outlive the pacers: a pipe disposed under a write, and a `Task.Delay` registering on a
-  disposed source, each throw where nothing is watching. Kill the encoder first so a blocked write
-  faults, and keep the drain bounded. Nothing a pacer calls back into during it may want `_gate` -
-  the drain holds it - which is why `RunPacerAsync` and the encoder's `Exited` handler detach their
-  stops.
+- A receiver delivers *nothing* while the sender is paused. `AudioPacer` therefore writes exactly one
+  second of frames per second of wall clock, filling silence on underrun, and `VideoPacer` emits a
+  fixed frame rate from the same `Clock`. Both demuxers derive timestamps from data received, so this
+  is also what keeps A/V in sync. Never make either pacer emit on source activity.
+- **The ffmpeg input writers need a raised high-water mark.** ffmpeg consumes each input in bursts
+  while it interleaves and fills a segment, so a writer left at asyncio's default 64 KiB blocks in
+  `drain()` for seconds at a time. The pacer reads the clock rather than its own progress, so a
+  blocked write comes out as a long burst followed by filled silence - measured, four seconds of
+  silence and three seconds shed per eight seconds of stream. `WRITE_BUFFER_LIMIT` is the buffer the
+  named pipes had before the move to loopback sockets.
+- A pacer only returns when it can no longer write, so its exit has to end the session - that is what
+  `_run_pacer` wraps both in. Silence is the *designed* output for a paused source, which means a dead
+  pacer looks identical to a quiet one from the outside - nothing else will notice. Several paths can
+  report one fault (both pacers see the broken socket, then the encoder exits); `_stop_core` is a
+  no-op once the session is gone, so only the first does anything.
+- Teardown kills the encoder first so a blocked write faults, then waits for the pacers before
+  aborting the writers and closing the servers under them. The wait is bounded.
+- The receiver is *not* part of the session. It runs whenever selected and `push_audio` drops what it
+  delivers while no session exists, so selecting a source and starting a stream stay independent.
 
-**ffmpeg**
-- Two named pipes, not stdin: stdin carries one stream, and keeping stdout free lets `-progress
-  pipe:1` deliver structured stats while stderr stays for log lines.
-- `-analyzeduration 0` with a small `-probesize` is load-bearing. ffmpeg's default 5 s probe does
-  not drain the audio pipe; the paced writer fills the pipe buffer, blocks, and sheds seconds of
-  audio.
-- The HLS muxer reports `bitrate=N/A`, so the delivered bitrate is measured from segment file sizes
-  in `HlsOutput.MeasureBitrateKbps`.
-- Output targets AVPro/VRChat: muxed mpegts, 1 s segments, one keyframe per second, `main` profile,
-  limited colour range. Separated audio/video tracks are a known VRChat failure mode. JPEG input is
-  full-range and will otherwise leak out as `yuvj420p`.
+**AirPlay**
+- Apple Music and iTunes for Windows speak **AirPlay 1 (RAOP) only** - confirmed by shairport-sync's
+  maintainer. No HomeKit pairing, no FairPlay, no SRP. Do not advertise AirPlay 2 keys (`ft`) or an
+  `_airplay._tcp` service: a sender that sees them tries AirPlay 2 first and then fails.
+- The six MAC bytes in the mDNS service name and the six signed into `Apple-Response` must be the same
+  bytes, and the A record must be the LAN IPv4 rather than loopback - the sender connects to that
+  address and it is also what gets signed.
+- `Apple-Challenge` is signed with PKCS#1 v1.5 and **no hash**. `cryptography` has no primitive for
+  an unhashed signature, so `keys.sign_challenge` builds the padded block and does the modpow itself.
+- The AES payload is decrypted with the IV reset **per packet**, not chained, and only
+  `len & ~0xF` bytes are encrypted - the tail rides in the clear.
+- A sender front-loads about two seconds on RECORD. Handing that straight to the pacer would trip its
+  600 ms shed cap and lose the start of every play, so `RtpSession` plays packets out on their own RTP
+  timestamps with a 250 ms lead and only then feeds the pacer.
+- When a hole in the sequence has nothing behind it, the sender stopped rather than dropped a packet:
+  park the cursor and resume wherever it speaks again. Filling silence there instead would emit
+  forever. A hole with later packets waiting is a real loss and does get silence, so the timeline
+  stays honest.
+- ffmpeg's ALAC decoder needs the **36-byte `alac` atom**, not the bare 24-byte body the SDP fmtp
+  describes. `alac.magic_cookie` rebuilds it, and its output is byte-identical to what ffmpeg writes
+  for its own ALAC files - which is how it was verified.
+- The TXT record offers uncompressed audio as well (`cn=0,1`), so `PcmDecoder` has to exist; a sender
+  that takes it would otherwise crash the session on an ALAC decoder it never announced.
+- A failed ANNOUNCE must release the session. Otherwise the connection stays the owner and the SETUP
+  that follows runs against parameters that were rejected.
+- Metadata arrives as DMAP over SET_PARAMETER. The Apple apps have been seen packing `artist — album`
+  into the artist field with the album empty; that split only fires when the album is genuinely empty,
+  because the result is burned into the outgoing video, and it logs when it does so it can be deleted
+  once the behaviour is confirmed either way.
 
-**Source selection and metadata**
-- Apple Music and Spotify mean the *desktop app* and are only offered when that process exists;
-  everything else is `External`. Nothing in Windows reports which site a browser tab is playing, so
-  never label a captured browser as a specific service.
-- Apple Music plays through `AMPLibraryAgent.exe`, not the window's `AppleMusic.exe`. The agent is
-  started by svchost, so it is not in the app's process tree either and `IncludeTargetProcessTree`
-  never reaches it: capturing the process behind the window records pure silence. Availability still
-  keys on `AppleMusic.exe` - the agent outlives the window - but the capture target must be the
-  agent, which is why `AppleAudioProcessNames` is a separate list and lists it first.
-- Apple Music does not fill `AlbumTitle` at all. It reports a space, em dash (U+2014), space - in
-  *both* `Artist` and `AlbumArtist`, so there is no clean field to read and
-  `SourceResolver.SplitAppleArtist` has to split the string. It splits on the first separator, since
-  an album is likelier to contain one than an artist, and only for Apple app ids: no other app's
-  format is known, and a guess here is burned into the outgoing video. Spotify fills both fields
-  properly, and every other app is `External`, where the fields are whatever that app chose.
-- `ManualProcessId` persists across runs while pids are recycled, so a manual pid that is not in
-  the process snapshot resolves as *not detected* rather than as a target that fails at attach time.
-- Auto target election prefers whichever candidate SMTC reports as *playing*. Do not elect on
-  `MasterPeakValue`: it is an instantaneous sample, so every gap in the audio flips the target,
-  which blinks the metadata and reattaches capture mid-stream. Loudness is a fallback only, and the
-  incumbent is held through short silences. The app's own WebView2 is excluded from candidates.
-- Metadata is only used when its SMTC session belongs to the captured process (`ProcessIdentity`).
-  A wrong title is burned into the outgoing video, so "no track info reported" is the correct
-  answer when nothing matches.
-- Matching app id to process is not name comparison. Chromium forks run as `chrome.exe` but report
-  e.g. `Helium.E2M2QCR2GB7Q3BNR56GK5FAO5Y`; the executable's product name and file description
-  bridge the two.
-- Discovery takes one `ProcessTree.Snapshot()` per poll and derives every process name and parent
-  from it. `Process.GetProcessById` enumerates the whole process table on each call, so nothing on
-  the poll path should open a `Process` except `ProcessIdentity`, which needs the start time and
-  version resources.
-- `ProcessIdentity` caches those lookups per *process instance* - pid plus start time - because
-  Windows recycles pids, and an entry outliving its process would hand one app's metadata to
-  whatever inherited the number. A lookup that fails is never cached, or one unreadable poll would
-  blank that process's name for the rest of the run.
-- `TimelineProperties.Position` is not a live clock - apps push it only on play/pause/seek, so it
-  must be extrapolated from `LastUpdatedTime`.
-- Every SMTC call runs on `MediaThread`. The session proxies are bound to the thread that created
-  their manager, and an `await` inside a read - a thumbnail especially - resumes on a different pool
-  thread, after which every remaining session throws `RPC_E_WRONG_THREAD` and is silently dropped
-  for that poll. Retrying does not help: the retry runs on the same wrong thread. Do not move this
-  work back onto the pool, and do not `await` SMTC anywhere else.
-- Artwork does not arrive with the title. A track the app has never played is still being fetched,
-  and until it lands the session reports *no thumbnail at all* rather than one that fails to read.
-  It is chased for `ArtworkPolls` polls after a track change and taken as soon as it appears; the
-  previous cover is dropped on the first empty read, or the video pairs the new title with the old
-  album for as long as the fetch takes.
-- `ArtworkStore.Version` is a hash of the bytes, not a counter, because it is also the cache key in
-  `/api/art?v=`. That response is `immutable` for a year and WebView2's cache outlives the process,
-  so a counter restarting at 1 each run served the panel the *previous* run's covers - while the
-  video, which reads the bytes in-process, looked correct. Keep any cache key here content-derived.
-  It is also forced odd, so it can never be 0 - the panel reads 0 as "no artwork".
+**Spotify**
+- go-librespot's Windows build **stubs out the pipe backend**, and its WASAPI backend plays to the
+  system default device with no way to select another. `vendor/go-librespot/` holds the one-file patch
+  that implements the pipe there and the steps to build it; until that binary exists the Spotify
+  source reports itself unavailable and Apple Music is unaffected.
+- The named pipe instance must exist **before** the daemon starts, because go-librespot is the client
+  and its open fails outright when nothing is listening.
+- go-librespot closes the pipe on stop and on playback moving to another device, and reopens it on the
+  next play. The reader is therefore a loop that survives any number of connect cycles; the pacer
+  fills the gaps and never learns anything happened. Never close the pipe while streaming should
+  continue - a write error makes the daemon emit `stopped` and stay stopped until the user presses
+  play.
+- `external_volume: true` keeps the broadcast at full scale; Spotify's slider is the listener's
+  business, not ours. The AirPlay side ignores its `volume:` messages for the same reason.
+- Password login is gone from Spotify. Credentials arrive by the desktop app handing off over
+  zeroconf, and are persisted so later runs need no re-pick.
 
 **Serialization and background tasks**
-- Never put a non-finite `double` into anything serialized. `System.Text.Json` refuses to write
-  infinity, and because the telemetry loop is fire-and-forget the throw silently froze the meter and
-  all stream statistics. Use `null` (see `LevelMeter.Read`).
-- `ControlApi` serializes with `StateHub.Json` - the panel takes its first paint from `/api/state`
-  and every update from the socket, so both must look the same.
+- Never put a non-finite `float` into anything serialized. `state.dumps` passes `allow_nan=False`, so
+  a mistake raises here instead of emitting JSON a browser silently rejects (see `LevelMeter.read`,
+  which returns `None` rather than `-inf`).
+- The hub is mutated from receiver threads as well as the loop, so broadcasts are scheduled with
+  `call_soon_threadsafe` and each client has its own queue - a mutation never blocks on a slow socket.
 - Detached tasks must log their exceptions. Anything swallowed here is invisible and presents as a
   frozen UI.
-- Nothing in `Program.Shutdown` may throw. It runs after `Application.Run` returns, so the window is
-  gone and there is no handler above it: a throw there is a crash dialog, not a message. It is also
-  the *only* caller that surfaces a teardown fault at all - the same fault from the panel's stop
-  button lands in an HTTP response nobody reads. Each step is attempted independently, because
-  skipping the rest would leave ffmpeg or cloudflared running and the stream publicly live.
-- `MainWindow` closes with `BeginInvoke(Close)`, never a bare `Close()`. The command arrives on a
-  WebView2 message callback, and closing disposes the WebView2 that is mid-dispatch.
-- Every child process is adopted into `ChildProcessJob`, whose handle must stay open for the life of
-  the app - closing it is what kills them. That is the only cover for an End task or a crash, where
-  no teardown of ours runs; measured, a killed app otherwise leaves cloudflared serving the tunnel
-  indefinitely. ffmpeg happens to die on its own when its pipes break, but do not rely on it.
+- Logging must never throw. The Windows console cannot encode every track title, so the print is
+  guarded; prefer plain quotes over typographic ones in log and status strings.
+- Nothing in `app._shutdown` may throw. It runs after the window has gone and there is no handler
+  above it. Each step is attempted independently, because skipping the rest would leave ffmpeg,
+  cloudflared or go-librespot running and the stream publicly live.
+- Every child process is adopted into the job object in `jobs.py`, whose handle must stay open for the
+  life of the app - closing it is what kills them. That is the only cover for an End task or a crash,
+  where no teardown of ours runs; measured, a killed app otherwise leaves cloudflared serving the
+  tunnel indefinitely.
+
+**Encoder**
+- `-analyzeduration 0` with a small `-probesize` is load-bearing. ffmpeg's default 5 s probe does not
+  drain the audio input; the paced writer fills the buffer, blocks, and sheds seconds of audio. The
+  video input's probesize must still admit one whole JPEG.
+- The HLS muxer reports `bitrate=N/A`, so the delivered bitrate is measured from segment file sizes in
+  `hls.measure_bitrate_kbps`.
+- Output targets AVPro/VRChat: muxed mpegts, 1 s segments, one keyframe per second, `main` profile,
+  limited colour range. Separated audio/video tracks are a known VRChat failure mode. JPEG input is
+  full-range and will otherwise leak out as `yuvj420p`. libx264 warns that 1280x720 exceeds the level
+  3.1 limits it is given; that is the tuned combination and the warning is expected.
+- The cover renderer caches the composed ground (blurred backdrop plus art) per artwork version and
+  redraws only the text over it. The blur is most of the frame cost - 77 ms against 6 ms for a text
+  redraw - and only the progress and track fields change between frames.
 
 ## Control panel (`wwwroot/`)
 
@@ -314,20 +266,27 @@ the system reads one end as a ground and the other as ink (`.tag-accent`, the st
 are the modal scrim and the inactive dots, which want the same value either way. A theme of `Auto`
 sets no `data-theme` at all, so the `prefers-color-scheme` block paints it - which is also what makes
 the first frame right before `app.js` has read the setting, and why that block is the token list a
-second time. WebView2 follows the Windows app theme for that query with no host setting.
+second time.
 
-The window behind the page is not covered by any of it: `MainWindow.ApplyTheme` paints what shows
-before the first paint and wherever WebView2 lags a resize. The page posts every change, so the host
-only resolves the setting itself - `Auto` against the registry's `AppsUseLightTheme` - for the frames
-before the page has loaded.
+The window is an ordinary framed window, so the page owns none of the chrome. `ui.ground` paints what
+shows before the first paint, resolving `Auto` against the registry's `AppsUseLightTheme`. The page no
+longer posts anything to the host, and the body scrolls rather than growing the window when the
+details drawer opens.
 
 ## Not yet verified
 
-The Spotify **desktop app** branch has never run - it is not installed on the development machine, so
-that path is written but unexercised, as is iTunes, which the Apple branch also matches. Apple Music
-itself has been verified end to end against real playback on the Store build
-(`AppleInc.AppleMusicWin`). Everything else in the pipeline has been verified the same way.
+The **Spotify** path has never run end to end: it needs the patched go-librespot binary described in
+`vendor/go-librespot/README.md`, and no release carries it yet. Everything up to that binary - the
+config, the process wrapper, the named pipe reader, the API client - is written and the pipe reader
+is verified against synthetic writers, including reconnect cycles.
 
-Window sizing has only been exercised on the development machine: one 2560x1440 monitor at 125% with
-a bottom taskbar. The DPI and multi-monitor paths (`OnDpiChanged`, `Screen.FromControl`, a taskbar on
-another edge) are written against the per-monitor APIs but unmeasured.
+The **AirPlay** path is verified end to end against a synthetic RAOP sender that performs the real
+handshake and streams real AES-encrypted ALAC: challenge signing, key unwrap, SETUP, RECORD, DMAP
+metadata, JPEG artwork, progress, and decoded PCM all check out. It has **not** yet been driven by
+Apple Music itself; the service is confirmed discoverable over mDNS on the development machine, but
+whether Apple Music for Windows lists it, and whether it advertises `_dacp._tcp` so the transport
+buttons work, are unconfirmed. The panel keeps working without DACP - only the transport buttons go
+quiet.
+
+The pipeline, both web surfaces, the tunnel, the frozen exe and the panel have been verified by
+running them.
