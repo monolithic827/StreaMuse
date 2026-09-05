@@ -88,9 +88,7 @@ jobs:
           cd go-librespot
           go build -o ../out/go-librespot.exe -ldflags "-s -w" ./cmd/daemon
 
-          # CGO_ENABLED links these dynamically; only libogg was forced static above. Ship them
-          # alongside the exe or a machine without MSYS2 gets a Windows "DLL was not found"
-          # dialog that never mentions go-librespot.
+          # CGO_ENABLED links these dynamically - see CLAUDE.md's Spotify section.
           cp /mingw64/bin/{libmpg123-0,libFLAC,libvorbisenc-2,libvorbis-0}.dll ../out/
 
       - uses: actions/upload-artifact@v7
@@ -150,8 +148,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # deps.GO_LIBRESPOT_LIBS_URL points at this asset - it's how a machine that already
-          # has a broken exe, or a source checkout without MSYS2, recovers without a reinstall.
+          # deps.GO_LIBRESPOT_LIBS_URL points at this asset - see CLAUDE.md's Spotify section.
           $libs = uv run python -c "from streamuse.deps import GO_LIBRESPOT_LIBS; print(chr(10).join(GO_LIBRESPOT_LIBS))"
           Compress-Archive -Path ($libs | ForEach-Object { "vendor/bin/$_" }) -DestinationPath go-librespot-libs.zip
 

@@ -2,9 +2,8 @@
 
 The exe ships all three, so nothing here runs for the people who download one. From a source
 checkout ffmpeg and cloudflared are downloaded into the app's own bin folder instead, and
-go-librespot itself is only ever looked for, never downloaded - see vendor/go-librespot/README.md.
-Its dynamically-linked audio libraries are the exception: they are ordinary DLLs from a stable
-build we control, so a missing one is downloaded the same way ffmpeg and cloudflared are."""
+go-librespot is only ever looked for - see vendor/go-librespot/README.md and CLAUDE.md's Spotify
+section for why its audio-decoding DLLs are the one part of it that gets downloaded."""
 
 import asyncio
 import os
@@ -30,9 +29,7 @@ GO_LIBRESPOT_LIBS_URL = (
     "go-librespot-libs.zip"
 )
 
-#: go-librespot's Windows build is a CGO binary linked against these MSYS2-provided DLLs (see
-#: the librespot job in build.yml); a machine without MSYS2 fails with a Windows "DLL was not
-#: found" dialog that never mentions go-librespot at all.
+#: go-librespot's dynamically-linked audio libraries - see CLAUDE.md's Spotify section.
 GO_LIBRESPOT_LIBS = ("libmpg123-0.dll", "libFLAC.dll", "libvorbisenc-2.dll", "libvorbis-0.dll")
 
 USER_AGENT = "StreaMuse/1.0"
@@ -99,8 +96,6 @@ class DependencyManager:
         if exe is None:
             return
 
-        # A properly staged build (or a dev who copied them by hand) already has them next to
-        # the exe; PATH is only the fallback LibrespotProcess adds for BIN_DIR specifically.
         if _has_libs(Path(exe).parent) or _has_libs(paths.BIN_DIR):
             return
 

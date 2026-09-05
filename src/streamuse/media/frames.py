@@ -216,8 +216,7 @@ def _ellipsize(text: str, font, max_width: float) -> str:
 
 
 def _rtl(text: str, font, max_width: float) -> str:
-    #: Pillow places glyphs in raw codepoint order, so reorder into visual order last - trimming
-    #: already-reordered text would cut from the wrong end.
+    #: Reshape and ellipsize before reordering into visual order - see CLAUDE.md.
     return get_display(_ellipsize(arabic_reshaper.reshape(text), font, max_width))
 
 

@@ -59,9 +59,8 @@ class LibrespotProcess:
     async def start(self, executable: str, device_name: str, api_port: int) -> None:
         write_config(paths.LIBRESPOT_DIR, device_name, api_port)
 
-        # go-librespot.exe itself may run from a onefile temp extraction that is wiped on exit,
-        # so deps.ensure_all downloads its audio-decoding DLLs into BIN_DIR instead, a directory
-        # that survives between runs. Windows searches PATH for DLLs the exe's own folder lacks.
+        # BIN_DIR on PATH so a downloaded audio DLL is found regardless of where the exe itself
+        # runs from - see CLAUDE.md's Spotify section.
         env = os.environ.copy()
         env["PATH"] = str(paths.BIN_DIR) + os.pathsep + env.get("PATH", "")
 
