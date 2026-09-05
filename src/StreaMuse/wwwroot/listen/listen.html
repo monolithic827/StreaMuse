@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="robots" content="noindex, nofollow">
+  <title>StreaMuse</title>
+  <!-- {v} is the asset version ListenerEndpoint substitutes; see CLAUDE.md on why the URL, not a
+       header, is what busts these. -->
+  <link rel="stylesheet" href="listen.css?v={v}">
+</head>
+
+<body>
+
+  <main class="stage">
+
+    <header class="bar">
+      <span class="wordmark">StreaMuse</span>
+      <span class="status" id="status">
+        <i class="dot"></i>
+        <span id="status-text">Connecting</span>
+      </span>
+    </header>
+
+    <section class="now">
+
+      <figure class="art blueprint" id="art">
+        <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+        <img id="cover" alt="Album artwork" hidden>
+        <span class="art-empty" id="art-empty">No artwork</span>
+      </figure>
+
+      <div class="meta">
+        <p class="eyebrow" id="eyebrow">Now playing</p>
+        <h1 class="title" id="title">Connecting…</h1>
+        <p class="artist" id="artist"></p>
+        <p class="album" id="album"></p>
+
+        <div class="progress" id="progress" hidden>
+          <div class="track">
+            <i id="fill"></i>
+          </div>
+          <div class="times">
+            <span id="elapsed">0:00</span>
+            <span id="duration">--:--</span>
+          </div>
+        </div>
+      </div>
+
+    </section>
+
+  </main>
+
+  <script src="listen.js?v={v}"></script>
+</body>
+
+</html>

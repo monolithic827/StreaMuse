@@ -122,13 +122,13 @@ public sealed class DiscoveryService(
     {
         if (session is null || string.IsNullOrWhiteSpace(session.Title))
         {
-            return new NowPlaying("Nothing playing", "-", "-", false, 0, 0, artworkVersion);
+            return new NowPlaying("", "", "", false, 0, 0, artworkVersion);
         }
 
         return new NowPlaying(
             session.Title,
-            string.IsNullOrWhiteSpace(session.Artist) ? "-" : session.Artist,
-            string.IsNullOrWhiteSpace(session.Album) ? "-" : session.Album,
+            session.Artist.Trim(),
+            session.Album.Trim(),
             session.Playing,
             session.PositionSeconds,
             session.DurationSeconds,

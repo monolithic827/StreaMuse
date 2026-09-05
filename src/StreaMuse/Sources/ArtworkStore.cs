@@ -14,6 +14,10 @@ public sealed class ArtworkStore
 
     public byte[]? Bytes { get { lock (_sync) return _bytes; } }
 
+    /// <summary>Both together, for a caller that caches the bytes under the version: read apart, a
+    /// track change between them pins one cover under the other's key.</summary>
+    public (long Version, byte[]? Bytes) Current { get { lock (_sync) return (_version, _bytes); } }
+
     /// <summary>Returns true when the artwork actually changed.</summary>
     public bool Set(byte[]? bytes)
     {
@@ -27,6 +31,18 @@ public sealed class ArtworkStore
             _version = version;
             return true;
         }
+    }
+
+    /// <summary>SMTC hands back whatever the app supplied, so the type has to come from the bytes.
+    /// Takes them rather than reading Bytes, or a track change between the two reads would label one
+    /// image with another's type.</summary>
+    public static string ContentTypeOf(byte[] bytes)
+    {
+        if (bytes.Length >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF) return "image/jpeg";
+        if (bytes.Length >= 8 && bytes[0] == 0x89 && bytes[1] == 0x50) return "image/png";
+        if (bytes.Length >= 12 && bytes[8] == 'W' && bytes[9] == 'E') return "image/webp";
+        if (bytes.Length >= 6 && bytes[0] == 'G' && bytes[1] == 'I') return "image/gif";
+        return "application/octet-stream";
     }
 
     private static long Fingerprint(byte[] bytes) =>
