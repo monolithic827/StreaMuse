@@ -37,16 +37,17 @@ class _Session:
 
 
 class StreamPipeline:
-    def __init__(self, settings, hub, deps, artwork, tunnel, sample_rate: int) -> None:
+    def __init__(self, settings, hub, deps, artwork, tunnel, sample_rate: int, dj=None) -> None:
         self._settings = settings
         self._hub = hub
         self._deps = deps
         self._artwork = artwork
         self._tunnel = tunnel
+        self._dj = dj
 
         self._gate = asyncio.Lock()
         self._clock = Clock()
-        self._pacer = AudioPacer(sample_rate)
+        self._pacer = AudioPacer(sample_rate, mixer=dj)
         self._meter = LevelMeter(sample_rate)
         self._sample_rate = sample_rate
         self._session: _Session | None = None
@@ -56,6 +57,10 @@ class StreamPipeline:
     def running(self) -> bool:
         return self._session is not None
 
+    def set_dj(self, dj) -> None:
+        self._dj = dj
+        self._pacer.set_mixer(dj)
+
     def push_audio(self, chunk: bytes) -> None:
         """The sink every receiver feeds. Dropped while no session exists, so a receiver's lifetime
         stays independent of the encoder's."""
@@ -63,6 +68,8 @@ class StreamPipeline:
             return
         self._meter.add(chunk)
         self._pacer.push(chunk)
+        if self._dj is not None:
+            self._dj.observe_live(chunk)
 
     async def start(self) -> bool:
         async with self._gate:
@@ -119,7 +126,7 @@ class StreamPipeline:
         self._pacer.reset()
         self._clock.restart()
 
-        renderer = CoverFrameRenderer(self._settings, self._artwork, self._hub)
+        renderer = CoverFrameRenderer(self._settings, self._artwork, self._hub, self._dj)
         video_pacer = VideoPacer(renderer)
 
         session.tasks = [

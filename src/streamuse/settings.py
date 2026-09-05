@@ -36,6 +36,10 @@ class Settings:
     logExpanded: bool = False
     theme: str = "Auto"
 
+    djEnabled: bool = False
+    djCrossfadeSeconds: float = 8.0
+    djSfxEnabled: bool = True
+
     def normalized(self) -> "Settings":
         """Clamps anything a hand-edited file (or a stale schema) could have made invalid."""
         self.source = self.source if self.source in SOURCES else "apple"
@@ -48,6 +52,7 @@ class Settings:
         self.audioBitrateKbps = _clamp(self.audioBitrateKbps, 64, 512)
         self.tunnelMode = self.tunnelMode if self.tunnelMode in TUNNEL_MODES else "Quick"
         self.theme = self.theme if self.theme in THEMES else "Auto"
+        self.djCrossfadeSeconds = _clamp_float(self.djCrossfadeSeconds, 2.0, 20.0)
         return self
 
     def apply(self, other: "Settings") -> None:
@@ -100,6 +105,10 @@ def from_dict(raw: dict) -> Settings:
 
 
 def _clamp(value: int, low: int, high: int) -> int:
+    return max(low, min(high, value))
+
+
+def _clamp_float(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 

@@ -29,6 +29,13 @@
         <path d="M12 2v2m0 16v2M4.9 4.9l1.5 1.5m11.2 11.2 1.5 1.5M2 12h2m16 0h2M4.9 19.1l1.5-1.5M17.6 6.4l1.5-1.5" />
       </svg>
     </button>
+    <button class="btn btn-icon btn-secondary" id="btn-dj" aria-label="Open DJ" title="Open DJ"
+      data-bind-show="djEnabled">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <circle cx="8" cy="16" r="3" /><circle cx="18" cy="14" r="3" />
+        <path d="M11 16V5l10-2v11" />
+      </svg>
+    </button>
     <button class="btn btn-icon btn-secondary" id="btn-settings" aria-label="Settings" title="Settings">
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <path d="M20 7h-9M14 17H5" />
@@ -243,6 +250,26 @@
 
         <label class="radio"><input type="checkbox" id="set-autotunnel"><span class="dot"></span>Start the tunnel
           automatically with the stream</label>
+
+        <hr class="hr">
+
+        <div class="field">
+          <label>DJ mixer</label>
+          <label class="radio"><input type="checkbox" id="set-dj-enabled"><span class="dot"></span>Let viewers
+            request songs to mix into the stream</label>
+        </div>
+
+        <div class="grid2">
+          <div class="field">
+            <label>Crossfade length - <span id="lbl-dj-crossfade">8s</span></label>
+            <input class="input range" type="range" id="set-dj-crossfade" min="2" max="20" step="1">
+          </div>
+          <div class="field">
+            <label>Sound effects</label>
+            <label class="radio"><input type="checkbox" id="set-dj-sfx"><span class="dot"></span>Occasional drop-in
+              accents</label>
+          </div>
+        </div>
 
         <hr class="hr">
 

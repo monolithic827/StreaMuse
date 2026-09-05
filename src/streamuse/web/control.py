@@ -1,5 +1,7 @@
 """Loopback-only control surface. Never exposed through the tunnel."""
 
+from dataclasses import asdict
+
 from aiohttp import web
 
 from .. import paths, settings as settings_module
@@ -11,7 +13,8 @@ IMMUTABLE = "public, max-age=31536000, immutable"
 PLAYER_COMMANDS = ("playpause", "next", "prev")
 
 
-def build_app(hub, deps, artwork, settings, pipeline, tunnel, sources, public_port: int) -> web.Application:
+def build_app(hub, deps, artwork, settings, pipeline, tunnel, sources, dj,
+             public_port: int) -> web.Application:
     app = web.Application()
 
     async def state(_request):
@@ -84,6 +87,37 @@ def build_app(hub, deps, artwork, settings, pipeline, tunnel, sources, public_po
     async def index(_request):
         return _file(paths.wwwroot() / "index.html", "text/html")
 
+    async def dj_page(_request):
+        return _file(paths.wwwroot() / "dj.html", "text/html")
+
+    async def dj_request(request):
+        try:
+            body = await request.json()
+        except ValueError:
+            raise web.HTTPBadRequest()
+
+        query = str(body.get("query", "") or "").strip()
+        if not query:
+            raise web.HTTPBadRequest()
+
+        accepted, error, entry = dj.request(query)
+        if not accepted:
+            raise web.HTTPBadRequest(
+                text=dumps({"detail": error or "could not queue that request"}),
+                content_type="application/json")
+        return _json(asdict(entry))
+
+    async def dj_skip(_request):
+        dj.skip()
+        return web.Response()
+
+    async def dj_art(_request):
+        data = dj.artwork.bytes
+        if not data:
+            raise web.HTTPNotFound()
+        return web.Response(body=data, content_type=content_type_of(data),
+                            headers={"Cache-Control": IMMUTABLE})
+
     app.router.add_get("/api/state", state)
     app.router.add_get("/api/art", art)
     app.router.add_post("/api/settings", save_settings)
@@ -93,8 +127,12 @@ def build_app(hub, deps, artwork, settings, pipeline, tunnel, sources, public_po
     app.router.add_post("/api/tunnel/stop", tunnel_stop)
     app.router.add_post("/api/deps/refresh", deps_refresh)
     app.router.add_post("/api/player/{command}", player)
+    app.router.add_post("/api/dj/request", dj_request)
+    app.router.add_post("/api/dj/skip", dj_skip)
+    app.router.add_get("/api/dj/art", dj_art)
     app.router.add_get("/ws", websocket)
     app.router.add_get("/", index)
+    app.router.add_get("/dj", dj_page)
     app.router.add_static("/", paths.wwwroot())
 
     return app

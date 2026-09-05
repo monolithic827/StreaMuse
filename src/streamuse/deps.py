@@ -30,6 +30,8 @@ GO_LIBRESPOT_URL = (
     "go-librespot-0.9.0-winpipe/go-librespot_windows_amd64.tar.gz"
 )
 
+YT_DLP_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+
 USER_AGENT = "StreaMuse/1.0"
 
 
@@ -40,6 +42,7 @@ class DependencyManager:
         self.ffmpeg: str | None = None
         self.cloudflared: str | None = None
         self.go_librespot: str | None = None
+        self.yt_dlp: str | None = None
 
     async def ensure_all(self) -> None:
         """Resolves every tool, downloading anything missing. Safe to call repeatedly."""
@@ -48,11 +51,13 @@ class DependencyManager:
             self.ffmpeg = await self._ensure_ffmpeg()
             self.cloudflared = await self._ensure_single("cloudflared.exe", CLOUDFLARED_URL, "cloudflared")
             self.go_librespot = await self._ensure_go_librespot()
+            self.yt_dlp = await self._ensure_single("yt-dlp.exe", YT_DLP_URL, "yt-dlp")
 
             self._hub.set_dependencies([
                 DependencyView("ffmpeg", self.ffmpeg),
                 DependencyView("cloudflared", self.cloudflared),
                 DependencyView("go-librespot", self.go_librespot),
+                DependencyView("yt-dlp", self.yt_dlp),
             ])
 
     async def _ensure_ffmpeg(self) -> str | None:

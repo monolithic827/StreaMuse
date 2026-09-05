@@ -66,6 +66,29 @@ class TunnelState:
 
 
 @dataclass(frozen=True)
+class DjQueueEntry:
+    id: str
+    query: str
+    title: str
+    artist: str
+    status: str
+
+
+@dataclass(frozen=True)
+class DjState:
+    """The panel's dj field is None while DJ mixing is disabled in Settings - what makes the DJ
+    button feature-detected rather than always shown."""
+    queue: list[DjQueueEntry]
+    nowMixing: DjQueueEntry | None
+    phaseText: str
+    confidencePercent: float | None
+    album: str
+    positionSeconds: float
+    durationSeconds: float
+    artworkVersion: int
+
+
+@dataclass(frozen=True)
 class DependencyView:
     name: str
     path: str | None
@@ -99,6 +122,7 @@ class StateHub:
         self._tunnel = TunnelState()
         self._deps: list[DependencyView] = []
         self._local_url: str | None = None
+        self._dj: DjState | None = None
 
     def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """Mutations arrive from receiver threads too, so broadcasts are scheduled onto the loop."""
@@ -129,6 +153,11 @@ class StateHub:
         with self._lock:
             return self._local_url
 
+    @property
+    def dj(self) -> DjState | None:
+        with self._lock:
+            return self._dj
+
     def set_source(self, value: SourceState) -> None:
         self._mutate("_source", value)
 
@@ -146,6 +175,9 @@ class StateHub:
 
     def set_local_url(self, value: str | None) -> None:
         self._mutate("_local_url", value)
+
+    def set_dj(self, value: DjState | None) -> None:
+        self._mutate("_dj", value)
 
     def log(self, level: str, message: str) -> None:
         with self._lock:
@@ -180,6 +212,7 @@ class StateHub:
                 "log": [asdict(line) for line in self._log],
                 "localUrl": self._local_url,
                 "settings": self.settings.to_dict(),
+                "dj": asdict(self._dj) if self._dj is not None else None,
             }
 
     def publish_meter(self, bars: list[float], peak_db: float | None, signal: bool) -> None:
