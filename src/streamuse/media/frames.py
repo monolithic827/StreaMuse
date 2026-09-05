@@ -5,6 +5,8 @@ import io
 import os
 from pathlib import Path
 
+import arabic_reshaper
+from bidi import get_display
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 JPEG_QUALITY = 88
@@ -122,15 +124,15 @@ class CoverFrameRenderer:
         y = self._art_box[1] + height * 0.10
 
         title = now.title or "Nothing playing"
-        draw.text((left, y), _ellipsize(title, self._title_font, available),
+        draw.text((left, y), _rtl(title, self._title_font, available),
                   font=self._title_font, fill=BRIGHT, anchor="ls")
         y += height * 0.085
 
-        draw.text((left, y), _ellipsize(now.artist, self._body_font, available),
+        draw.text((left, y), _rtl(now.artist, self._body_font, available),
                   font=self._body_font, fill=MUTED, anchor="ls")
         y += height * 0.06
 
-        draw.text((left, y), _ellipsize(now.album, self._small_font, available),
+        draw.text((left, y), _rtl(now.album, self._small_font, available),
                   font=self._small_font, fill=FAINT, anchor="ls")
 
         bar_y = self._art_box[3] - height * 0.06
@@ -211,6 +213,12 @@ def _ellipsize(text: str, font, max_width: float) -> str:
         trimmed = trimmed[:-1]
 
     return trimmed + "\u2026"
+
+
+def _rtl(text: str, font, max_width: float) -> str:
+    #: Pillow places glyphs in raw codepoint order, so reorder into visual order last - trimming
+    #: already-reordered text would cut from the wrong end.
+    return get_display(_ellipsize(arabic_reshaper.reshape(text), font, max_width))
 
 
 def _format_clock(seconds: float) -> str:
