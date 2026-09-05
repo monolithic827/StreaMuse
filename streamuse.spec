@@ -6,12 +6,14 @@
 # ffmpeg, cloudflared and go-librespot are shipped inside the exe so a download works offline and
 # on first launch: CI stages them into vendor/bin (see .github/workflows/build.yml) and
 # paths.bundled_bin() is where deps.resolve looks first. They go in as datas rather than binaries
-# because they are standalone programs, not libraries to be scanned for dependencies. A local build
-# with nothing staged still produces a working exe - it just falls back to downloading them.
+# so PyInstaller copies them verbatim instead of scanning them as Python extension modules - true
+# for the three standalone programs, and just as true for go-librespot's *.dll dependencies, which
+# need to sit next to it unmodified for Windows to find them. A local build with nothing staged
+# still produces a working exe - it just falls back to downloading them.
 
 from pathlib import Path
 
-staged = sorted(Path("vendor/bin").glob("*.exe"))
+staged = sorted(Path("vendor/bin").glob("*.exe")) + sorted(Path("vendor/bin").glob("*.dll"))
 
 analysis = Analysis(
     ["src/streamuse/__main__.py"],
