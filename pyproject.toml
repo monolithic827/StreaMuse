@@ -1,0 +1,29 @@
+[project]
+name = "streamuse"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "monolithic827", email = "257007037+monolithic827@users.noreply.github.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "aiohttp>=3.14.3",
+    "av>=18.1.0",
+    "cryptography>=50.0.1",
+    "pillow>=12.3.0",
+    "pywebview>=6.2.1",
+    "zeroconf>=0.151.3",
+]
+
+[project.scripts]
+streamuse = "streamuse:main"
+
+[build-system]
+requires = ["uv_build>=0.12.10,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.22.2",
+]

@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>StreaMuse</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="app.css">
+</head>
+
+<body>
+
+  <div class="nav">
+    <span class="nav-brand">StreaMuse<span style="color:var(--color-accent)">·</span>1.0</span>
+    <button class="btn btn-icon btn-secondary" id="btn-theme">
+      <svg data-theme-icon="Auto" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        stroke-width="1.5">
+        <circle cx="12" cy="12" r="9" />
+        <path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none" />
+      </svg>
+      <svg data-theme-icon="Dark" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        stroke-width="1.5" style="display:none">
+        <path d="M20 14.4A8.5 8.5 0 0 1 9.6 4 8.5 8.5 0 1 0 20 14.4z" />
+      </svg>
+      <svg data-theme-icon="Light" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        stroke-width="1.5" style="display:none">
+        <circle cx="12" cy="12" r="4" />
+        <path d="M12 2v2m0 16v2M4.9 4.9l1.5 1.5m11.2 11.2 1.5 1.5M2 12h2m16 0h2M4.9 19.1l1.5-1.5M17.6 6.4l1.5-1.5" />
+      </svg>
+    </button>
+    <button class="btn btn-icon btn-secondary" id="btn-settings" aria-label="Settings" title="Settings">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M20 7h-9M14 17H5" />
+        <circle cx="17" cy="17" r="3" />
+        <circle cx="7" cy="7" r="3" />
+      </svg>
+    </button>
+  </div>
+
+  <div class="wide-grid" id="wide">
+
+    <div class="now-column">
+      <figure class="blueprint art" id="art-figure">
+        <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+        <img data-bind="cover" alt="">
+        <span class="art-empty" data-bind="cover-empty">No artwork</span>
+      </figure>
+
+      <div style="min-width:0">
+        <div style="display:flex;align-items:center;gap:var(--space-2);margin-bottom:var(--space-2)">
+          <span class="tag tag-accent upper" data-bind="sourceName">Apple Music</span>
+          <span class="micro" data-bind="codecLine">no stream</span>
+        </div>
+        <h2 class="clamp2" data-bind="track">Nothing playing</h2>
+        <p class="artist" data-bind="artist">-</p>
+        <p class="album" data-bind="album">-</p>
+      </div>
+
+      <div class="progress-block">
+        <div class="progress-track"><i data-bind="progressFill"></i></div>
+        <div class="progress-times">
+          <span data-bind="elapsed">0:00</span><span data-bind="duration">--:--</span>
+        </div>
+        <div class="transport">
+          <button class="btn btn-secondary" data-player="prev" aria-label="Previous" title="Previous">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M6 6h2v12H6zm3 6 9-6v12z" />
+            </svg>
+          </button>
+          <button class="btn btn-secondary" data-player="playpause" aria-label="Play or pause"
+            title="Play or pause">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M8 5h3v14H8zm5 0h3v14h-3z" />
+            </svg>
+          </button>
+          <button class="btn btn-secondary" data-player="next" aria-label="Next" title="Next">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M16 6h2v12h-2zM6 6l9 6-9 6z" />
+            </svg>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="cards-column">
+
+      <section class="card blueprint">
+        <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+        <h6 class="card-head">Audio source</h6>
+        <div class="seg" style="width:100%">
+          <label class="seg-opt src-opt" data-source-opt="apple">
+            <input type="radio" name="src" value="apple" data-source>Apple Music
+          </label>
+          <label class="seg-opt src-opt" data-source-opt="spotify">
+            <input type="radio" name="src" value="spotify" data-source>Spotify
+          </label>
+        </div>
+        <div class="conn">
+          <i data-bind="connDot"></i><span data-bind="connLabel">Starting up…</span>
+        </div>
+      </section>
+
+      <section class="card blueprint">
+        <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+        <div style="display:flex;align-items:center;gap:var(--space-3)">
+          <h6 class="card-head">Stream</h6>
+          <span class="tag upper status-tag" data-bind="statusTag">Idle</span>
+        </div>
+
+        <div style="display:flex;align-items:stretch;gap:var(--space-3)">
+          <button class="btn blueprint btn-primary main-btn" data-main-button>
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+            <span data-bind="mainBtnLabel">Start stream</span>
+          </button>
+          <div class="url-row">
+            <span class="url-text" data-bind="url" title="">-</span>
+            <button class="btn btn-ghost" data-copy="hls" style="flex:none;font-size:12px">Copy</button>
+            <button class="btn btn-ghost" data-copy="page" style="flex:none;font-size:12px">Web</button>
+          </div>
+        </div>
+
+        <div class="tunnel-row">
+          <i data-bind="tunnelDot"></i>
+          <span data-bind="tunnelLabel">Tunnel off</span>
+          <button class="btn btn-secondary" data-tunnel-button
+            style="margin-left:auto;font-size:12px;padding:4px 10px">Start tunnel</button>
+        </div>
+      </section>
+
+      <section class="card blueprint">
+        <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+        <div style="display:flex;align-items:baseline;gap:var(--space-3)">
+          <h6 class="card-head">Receiver</h6>
+          <span style="margin-left:auto;font-size:13px" data-bind="device">-</span>
+        </div>
+        <div class="meter" data-meter style="height:46px"></div>
+        <div class="progress-times">
+          <span data-bind="signalLabel">No signal</span>
+          <span data-bind="peakLabel">peak −∞ dB</span>
+        </div>
+      </section>
+
+    </div>
+  </div>
+
+  <!-- ══ stream health ══ -->
+  <div class="health" id="health">
+    <button class="btn btn-ghost health-toggle" id="btn-log">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+        id="log-chevron">
+        <path d="m6 9 6 6 6-6" />
+      </svg>
+      <span class="health-title">Stream health</span>
+      <span class="health-stats">
+        <span data-bind="encoderShort">encoder idle</span>
+        <span data-bind="bitrateLabel">- kbps</span>
+        <span data-bind="uptimeLabel">up 00:00</span>
+      </span>
+    </button>
+    <div class="health-panel" id="log-panel">
+      <table class="table health-table">
+        <tbody id="health-rows"></tbody>
+      </table>
+      <div class="log-list" id="log-list"></div>
+    </div>
+  </div>
+
+  <!-- ══ settings ══ -->
+  <div class="dialog-backdrop" id="settings" hidden>
+    <div class="dialog blueprint">
+      <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+      <div style="display:flex;align-items:baseline;gap:var(--space-3)">
+        <span class="dialog-title">Settings</span>
+        <span class="micro" style="margin-left:auto">Encoder changes apply on next start</span>
+      </div>
+
+      <div class="dialog-body settings-body">
+        <div class="field">
+          <label for="set-name">Receiver name - what Apple Music and Spotify list</label>
+          <input class="input" id="set-name" maxlength="63">
+        </div>
+
+        <div class="field">
+          <label for="set-key">Stream key - the path segment in the public URL</label>
+          <input class="input" id="set-key">
+        </div>
+
+        <div class="field">
+          <label>Cover-art video feed</label>
+          <div class="seg" style="width:100%">
+            <label class="seg-opt res-opt"><input type="radio" name="res" value="640x640">640×640</label>
+            <label class="seg-opt res-opt"><input type="radio" name="res" value="1280x720">1280×720</label>
+            <label class="seg-opt res-opt"><input type="radio" name="res" value="1920x1080">1920×1080</label>
+          </div>
+        </div>
+
+        <div class="grid2">
+          <div class="field">
+            <label>Video bitrate - <span id="lbl-vbr">400 kbps</span></label>
+            <input class="input range" type="range" id="set-vbr" min="100" max="4000" step="50">
+          </div>
+          <div class="field">
+            <label>Audio bitrate - <span id="lbl-abr">320 kbps</span></label>
+            <input class="input range" type="range" id="set-abr" min="96" max="512" step="32">
+          </div>
+        </div>
+
+        <div class="grid2">
+          <div class="field">
+            <label>Frame rate - <span id="lbl-fps">10 fps</span></label>
+            <input class="input range" type="range" id="set-fps" min="1" max="30" step="1">
+          </div>
+          <div class="field">
+            <label>Overlay</label>
+            <label class="radio"><input type="checkbox" id="set-overlay"><span class="dot"></span>Show track
+              text</label>
+          </div>
+        </div>
+
+        <hr class="hr">
+
+        <div class="field">
+          <label>Cloudflare tunnel</label>
+          <div class="seg" style="width:100%">
+            <label class="seg-opt tunnel-opt" style="flex:1;justify-content:center"><input type="radio" name="tmode"
+                value="Quick">Quick (random URL)</label>
+            <label class="seg-opt tunnel-opt" style="flex:1;justify-content:center"><input type="radio" name="tmode"
+                value="Named">Named (stable)</label>
+          </div>
+        </div>
+
+        <div id="named-fields">
+          <div class="field">
+            <label for="set-token">Tunnel token</label>
+            <input class="input" id="set-token" type="password" placeholder="eyJhIjoi…">
+          </div>
+          <div class="field">
+            <label for="set-host">Routed hostname</label>
+            <input class="input" id="set-host" placeholder="stream.example.com">
+          </div>
+        </div>
+
+        <label class="radio"><input type="checkbox" id="set-autotunnel"><span class="dot"></span>Start the tunnel
+          automatically with the stream</label>
+
+        <hr class="hr">
+
+        <div class="field">
+          <label>Dependencies</label>
+          <div id="deps-list" class="deps"></div>
+          <button class="btn btn-secondary" id="btn-deps" style="margin-top:var(--space-2);font-size:12px">Re-check /
+            download</button>
+        </div>
+      </div>
+
+      <div class="dialog-actions">
+        <button class="btn btn-secondary" id="btn-cancel">Cancel</button>
+        <button class="btn btn-primary blueprint" id="btn-save">
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          Save
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+
+</html>
