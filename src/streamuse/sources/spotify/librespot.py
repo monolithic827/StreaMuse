@@ -59,7 +59,7 @@ class LibrespotProcess:
         write_config(paths.LIBRESPOT_DIR, device_name, api_port)
 
         self._process = await asyncio.create_subprocess_exec(
-            executable, "-config_dir", str(paths.LIBRESPOT_DIR),
+            executable, "--config_dir", str(paths.LIBRESPOT_DIR),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

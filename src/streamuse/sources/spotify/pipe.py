@@ -8,16 +8,26 @@ pacer fills the silence in between and never learns that anything happened.
 
 import _winapi
 import threading
+import time
+
+from .. import SAMPLE_RATE
 
 PIPE_NAME = r"\\.\pipe\streamuse-spotify"
 
 #: s16le stereo, so a partial read must not split a frame.
 FRAME_BYTES = 4
 READ_SIZE = 1 << 16
-BUFFER_SIZE = 1 << 20
+#: Kept close to a real hardware buffer's size - see CLAUDE.md.
+BUFFER_SIZE = 1 << 15
 
 #: PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT are all zero.
 PIPE_MODE_BYTE = 0
+
+#: How far ahead of real time the drain may run before it starts throttling.
+LEAD_SECONDS = 0.2
+
+#: Beyond this much behind, resync instead of paying the debt back as a burst - see CLAUDE.md.
+MAX_CATCH_UP_SECONDS = 0.5
 
 
 class PipeReader:
@@ -90,6 +100,7 @@ class PipeReader:
 
         self.connected = True
         tail = b""
+        deadline = time.monotonic()
 
         while not self._stop.is_set():
             data, _ = _winapi.ReadFile(handle, READ_SIZE)
@@ -101,3 +112,11 @@ class PipeReader:
             tail = data[keep:]
             if keep:
                 self._loop.call_soon_threadsafe(self._on_pcm, data[:keep])
+
+            deadline += (keep // FRAME_BYTES) / SAMPLE_RATE
+            now = time.monotonic()
+            ahead = deadline - now - LEAD_SECONDS
+            if ahead > 0:
+                time.sleep(ahead)
+            elif ahead < -MAX_CATCH_UP_SECONDS:
+                deadline = now + LEAD_SECONDS

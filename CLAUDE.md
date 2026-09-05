@@ -231,6 +231,22 @@ panel still receives the version as a number: nothing validates it there.
   fills the gaps and never learns anything happened. Never close the pipe while streaming should
   continue - a write error makes the daemon emit `stopped` and stay stopped until the user presses
   play.
+- **The pipe reader has to pace its own drain to real time.** go-librespot's pipe output has no pacing
+  of its own - `Write()` blocking on a full buffer is its only throttle, the role a real device's
+  small hardware buffer plays on Unix. Draining as fast as bytes arrive removes that backpressure:
+  go-librespot decodes and writes an entire track in a few CPU-bound seconds, then considers it
+  finished and skips to the next one. `PipeReader._read` holds its drain at `SAMPLE_RATE` with
+  `LEAD_SECONDS` of allowed slack, and caps catch-up (`MAX_CATCH_UP_SECONDS`) so a moment this thread
+  doesn't get scheduled - go-librespot keeps writing regardless - doesn't flush as a burst once it
+  resumes; `AudioPacer` already fills a gap like that with silence, the same as a paused source.
+- **`BUFFER_SIZE`, the pipe's kernel buffer, has to stay small.** Sized for several seconds, it let
+  go-librespot dump that much pre-buffered audio in almost instantly on connect - and since its
+  position tracking advances with every `Write()` regardless of whether this reader has actually
+  forwarded the audio yet, that showed up as a fixed multi-second gap between what the panel reports
+  playing and what the stream is actually playing, present from the first sample of every track.
+  Sized close to what a real hardware buffer would hold instead, `Write()` blocks almost immediately,
+  so go-librespot can never get more than a fraction of a second ahead of what has actually reached
+  `AudioPacer`.
 - `external_volume: true` keeps the broadcast at full scale; Spotify's slider is the listener's
   business, not ours. The AirPlay side ignores its `volume:` messages for the same reason.
 - Password login is gone from Spotify. Credentials arrive by the desktop app handing off over
