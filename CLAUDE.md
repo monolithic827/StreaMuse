@@ -46,6 +46,14 @@ uv run pyinstaller streamuse.spec --noconfirm  # dist/StreaMuse.exe
 the spec adds it explicitly and `paths.wwwroot()` resolves it identically from a checkout and from the
 unpacked bundle; editing the panel needs no rebuild when running from source.
 
+**The exe ships ffmpeg, cloudflared and go-librespot inside it**, so a download of it works offline
+and on first launch - which is the point, and why the release build must not silently produce an exe
+without them. CI stages the three into `vendor/bin` (gitignored) and *fails* if any is missing; the
+spec adds whatever is staged as `datas` under `bin/`, and `paths.bundled_bin()` is the first place
+`deps.resolve` looks. A local `pyinstaller` run with nothing staged still builds - the result just
+falls back to downloading, which is what a source checkout does anyway. go-librespot has no
+downloadable build at all, so CI builds it: see the `librespot` job and `vendor/go-librespot/`.
+
 There is **no test project**. Verification is done by running the app and checking real behaviour.
 Useful techniques used in practice:
 
@@ -213,9 +221,9 @@ panel still receives the version as a number: nothing validates it there.
   source reports itself unavailable and Apple Music is unaffected.
 - **`go-librespot.exe` is resolved, never downloaded.** No release carries the patch, so a URL for it
   is a URL that 404s - which it did, on every launch, as a red error in the log of everyone using
-  Apple Music. `DependencyManager.go_librespot` is a property over `resolve`, which also means a
-  binary built and dropped into `BIN_DIR` needs no restart. Restore a download only against an asset
-  that exists.
+  Apple Music. The exe carries a build made by CI; from source it is whatever the user built.
+  `DependencyManager.go_librespot` is a property over `resolve`, which also means a binary dropped
+  into `BIN_DIR` needs no restart. Restore a download only against an asset that exists.
 - The named pipe instance must exist **before** the daemon starts, because go-librespot is the client
   and its open fails outright when nothing is listening.
 - go-librespot closes the pipe on stop and on playback moving to another device, and reopens it on the
@@ -291,10 +299,11 @@ details drawer opens.
 
 ## Not yet verified
 
-The **Spotify** path has never run end to end: it needs the patched go-librespot binary described in
-`vendor/go-librespot/README.md`, and no release carries it yet. Everything up to that binary - the
-config, the process wrapper, the named pipe reader, the API client - is written and the pipe reader
-is verified against synthetic writers, including reconnect cycles.
+The **Spotify** path has never run end to end. Everything up to the binary - the config, the process
+wrapper, the named pipe reader, the API client - is written, and the pipe reader is verified against
+synthetic writers including reconnect cycles. The `librespot` CI job that produces the binary is
+lifted from upstream's own working Windows job, but it has not been run: the first release build is
+what proves it compiles, and the first play through it is what proves the patch works.
 
 The **AirPlay** path is verified end to end against a synthetic RAOP sender that performs the real
 handshake and streams real AES-encrypted ALAC: challenge signing, key unwrap, SETUP, RECORD, DMAP

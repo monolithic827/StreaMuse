@@ -1,5 +1,8 @@
-"""Resolves ffmpeg, cloudflared and go-librespot. The first two are downloaded into the app's own
-bin folder when they are not already there or on PATH; go-librespot is only ever looked for."""
+"""Resolves ffmpeg, cloudflared and go-librespot.
+
+The exe ships all three, so nothing here runs for the people who download one. From a source
+checkout ffmpeg and cloudflared are downloaded into the app's own bin folder instead, and
+go-librespot is only ever looked for - see vendor/go-librespot/README.md."""
 
 import asyncio
 import os
@@ -127,10 +130,10 @@ class DependencyManager:
 
 
 def resolve(exe: str) -> str | None:
-    """Look in our own bin folder first, then anywhere on PATH."""
-    local = paths.BIN_DIR / exe
-    if local.is_file():
-        return str(local)
+    """The exe's own copy first, then our bin folder, then anywhere on PATH."""
+    for directory in (paths.bundled_bin(), paths.BIN_DIR):
+        if directory is not None and (directory / exe).is_file():
+            return str(directory / exe)
 
     for directory in os.environ.get("PATH", "").split(os.pathsep):
         if not directory:

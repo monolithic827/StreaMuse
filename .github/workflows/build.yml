@@ -10,8 +10,89 @@ on:
 permissions:
   contents: write
 
+env:
+  # The go-librespot release the pipe patch in vendor/go-librespot applies to.
+  LIBRESPOT_REF: v0.9.0
+
 jobs:
+  librespot:
+    # go-librespot's own Windows build stubs out the pipe backend, so no release carries a binary
+    # we can use. This is upstream's Windows job with our one-file patch applied - keep it in step
+    # with theirs (.github/workflows/release.yml in devgianlu/go-librespot).
+    runs-on: windows-2022
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Restore the patched binary
+        id: cache
+        uses: actions/cache@v6
+        with:
+          path: out/go-librespot.exe
+          key: go-librespot-${{ env.LIBRESPOT_REF }}-${{ hashFiles('vendor/go-librespot/driver-pipe-windows.go') }}
+
+      - uses: actions/checkout@v7
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          repository: devgianlu/go-librespot
+          ref: ${{ env.LIBRESPOT_REF }}
+          path: go-librespot
+
+      - name: Apply the pipe patch
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          cp vendor/go-librespot/driver-pipe-windows.go go-librespot/output/driver-pipe-windows.go
+          # Both files define newPipeOutput.
+          rm go-librespot/output/driver-pipe-stub.go
+
+      - uses: actions/setup-go@v7
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          go-version: '1.25'
+          cache-dependency-path: go-librespot/go.sum
+
+      - uses: msys2/setup-msys2@v2
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          msystem: MINGW64
+          update: false
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-pkg-config
+            mingw-w64-x86_64-libogg
+            mingw-w64-x86_64-libvorbis
+            mingw-w64-x86_64-flac
+            mingw-w64-x86_64-mpg123
+          path-type: inherit
+
+      - name: Build
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: msys2 {0}
+        env:
+          CGO_ENABLED: 1
+        run: |
+          export CC="$(cygpath -m "$(command -v gcc)")"
+          export PKG_CONFIG="$(cygpath -m "$(command -v pkg-config)")"
+          export PKG_CONFIG_PATH="$(cygpath -m /mingw64/lib/pkgconfig)"
+          export PATH="/mingw64/bin:${PATH}"
+
+          # libogg.dll.a omits ogg_stream_iovecin; forcing -logg onto libogg.a is upstream's fix.
+          if [ -f /mingw64/lib/libogg.dll.a ]; then
+            mv /mingw64/lib/libogg.dll.a /mingw64/lib/libogg.dll.a.unused
+          fi
+
+          mkdir -p out
+          cd go-librespot
+          go build -o ../out/go-librespot.exe -ldflags "-s -w" ./cmd/daemon
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: go-librespot
+          path: out/go-librespot.exe
+
   build:
+    needs: librespot
     runs-on: windows-latest
 
     steps:
@@ -23,6 +104,30 @@ jobs:
 
       - name: Install
         run: uv sync --frozen
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: go-librespot
+          path: vendor/bin
+
+      - name: Stage ffmpeg and cloudflared
+        run: |
+          # deps.py holds the URLs so a source run and a release build fetch the same builds.
+          $urls = uv run python -c "from streamuse.deps import FFMPEG_URL, CLOUDFLARED_URL; print(FFMPEG_URL); print(CLOUDFLARED_URL)"
+
+          curl.exe -fLo ffmpeg.zip $urls[0]
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg
+          # The archive nests everything under ffmpeg-master-latest-win64-gpl/bin/.
+          Copy-Item @(Get-ChildItem ffmpeg -Recurse -Filter ffmpeg.exe)[0].FullName vendor/bin/
+
+          curl.exe -fLo vendor/bin/cloudflared.exe $urls[1]
+
+      - name: Check what will be shipped
+        run: |
+          $wanted = 'ffmpeg.exe', 'cloudflared.exe', 'go-librespot.exe'
+          $missing = $wanted | Where-Object { -not (Test-Path "vendor/bin/$_") }
+          if ($missing) { throw "not staged: $missing" }
+          Get-ChildItem vendor/bin | Format-Table Name, Length
 
       - name: Build
         run: uv run pyinstaller streamuse.spec --noconfirm

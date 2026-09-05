@@ -20,13 +20,9 @@ both into 1-second mpegts HLS segments - the format VRChat's AVPro player handle
 
 ## Running it
 
-```powershell
-uv run streamuse
-```
-
-On first launch it downloads `ffmpeg.exe` and `cloudflared.exe` into `%LOCALAPPDATA%\StreaMuse\bin`
-(~135 MB, once). Progress shows in the Stream health log; the AirPlay speaker is advertised before
-the download starts, so Apple Music can pick it straight away.
+Download `StreaMuse.exe` from the [latest release](../../releases/latest) and run it. It carries
+ffmpeg, cloudflared and go-librespot inside it, so there is nothing to install, nothing to download
+on first launch and nothing that needs the internet until you publish a stream.
 
 Then:
 
@@ -86,10 +82,13 @@ from wall clock - and writes what it heard to a WAV.
 uv run pyinstaller streamuse.spec --noconfirm   # dist/StreaMuse.exe
 ```
 
-CI builds the same one-file exe on every push and attaches it to a release on a `v*` tag.
+CI builds the same one-file exe on every push and attaches it to a release on a `v*` tag. It stages
+the three tools into `vendor/bin` first and fails the build if any is missing, so a release can
+never ship without them. go-librespot's own Windows build cannot write audio to a pipe, so CI builds
+it from upstream with the one-file patch in `vendor/go-librespot/`.
 
-**Spotify needs one extra step for now.** go-librespot's Windows build cannot write audio to a pipe;
-`vendor/go-librespot/` holds the small patch that fixes it and the steps to build the binary. No
-go-librespot release carries the patch, so `go-librespot.exe` is never downloaded - build it and drop
-it in `%LOCALAPPDATA%\StreaMuse\bin`. Without it Spotify is shown as unavailable and Apple Music
-works normally.
+Running from source instead (`uv run streamuse`) downloads ffmpeg and cloudflared into
+`%LOCALAPPDATA%\StreaMuse\bin` on first launch, ~200 MB, once - the AirPlay speaker is advertised
+before the download starts, so Apple Music can pick it straight away. go-librespot is not
+downloaded; build it per `vendor/go-librespot/README.md` or take the one out of a release exe.
+Without it Spotify shows as unavailable and Apple Music works normally.
