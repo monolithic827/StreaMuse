@@ -186,6 +186,13 @@ panel still receives the version as a number: nothing validates it there.
 - ffmpeg's ALAC decoder needs the **36-byte `alac` atom**, not the bare 24-byte body the SDP fmtp
   describes. `alac.magic_cookie` rebuilds it, and its output is byte-identical to what ffmpeg writes
   for its own ALAC files - which is how it was verified.
+- **A decoded plane is longer than the samples it holds.** ffmpeg allocates audio buffers with
+  alignment padding, so `bytes(frame.planes[0])` returns 128 bytes more than
+  `samples * 4` and every one of those bytes is zero. Sending the whole buffer appends silence to
+  every packet: 0.8 % on the 4096-frame packets a test file produces, and **9 % on the 352-frame
+  packets AirPlay actually sends**, which is both an audible buzz at the packet rate and a 9 %
+  overrun the pacer then sheds continuously. Always cut a plane to `frame.samples`. The receiver's
+  output is bit-exact against a reference decode, and that comparison is the test that catches this.
 - The TXT record offers uncompressed audio as well (`cn=0,1`), so `PcmDecoder` has to exist; a sender
   that takes it would otherwise crash the session on an ALAC decoder it never announced.
 - A failed ANNOUNCE must release the session. Otherwise the connection stays the owner and the SETUP
