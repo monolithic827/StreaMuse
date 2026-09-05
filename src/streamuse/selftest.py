@@ -25,9 +25,6 @@ async def run_receiver_test(source: str, seconds: int) -> None:
     artwork = ArtworkStore()
 
     deps = DependencyManager(hub)
-    if source == "spotify":
-        await deps.ensure_all()
-
     receiver = _build(source, settings, hub, artwork, deps)
     if not receiver.available:
         print(f"\n{source} is unavailable: {receiver.reason}")

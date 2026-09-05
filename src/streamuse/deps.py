@@ -1,9 +1,8 @@
-"""Resolves ffmpeg, cloudflared and go-librespot, downloading release builds into the app's
-own bin folder when they are not already there or on PATH."""
+"""Resolves ffmpeg, cloudflared and go-librespot. The first two are downloaded into the app's own
+bin folder when they are not already there or on PATH; go-librespot is only ever looked for."""
 
 import asyncio
 import os
-import tarfile
 import tempfile
 import zipfile
 from pathlib import Path
@@ -22,14 +21,6 @@ CLOUDFLARED_URL = (
     "cloudflared-windows-amd64.exe"
 )
 
-#: go-librespot's own releases carry a Windows build whose pipe backend is a stub, so this is our
-#: fork's build of the same version with the named-pipe output patched in. Swap to the upstream
-#: asset once a release ships the patch.
-GO_LIBRESPOT_URL = (
-    "https://github.com/monolithic827/streamuse/releases/download/"
-    "go-librespot-0.9.0-winpipe/go-librespot_windows_amd64.tar.gz"
-)
-
 USER_AGENT = "StreaMuse/1.0"
 
 
@@ -39,7 +30,13 @@ class DependencyManager:
         self._gate = asyncio.Lock()
         self.ffmpeg: str | None = None
         self.cloudflared: str | None = None
-        self.go_librespot: str | None = None
+
+    @property
+    def go_librespot(self) -> str | None:
+        """Found, never downloaded: no go-librespot release carries the Windows pipe patch, so this
+        is whatever the user built per vendor/go-librespot/README.md and put in BIN_DIR or on PATH.
+        Resolving it live also means a binary dropped in needs no restart."""
+        return resolve("go-librespot.exe")
 
     async def ensure_all(self) -> None:
         """Resolves every tool, downloading anything missing. Safe to call repeatedly."""
@@ -47,7 +44,6 @@ class DependencyManager:
             paths.BIN_DIR.mkdir(parents=True, exist_ok=True)
             self.ffmpeg = await self._ensure_ffmpeg()
             self.cloudflared = await self._ensure_single("cloudflared.exe", CLOUDFLARED_URL, "cloudflared")
-            self.go_librespot = await self._ensure_go_librespot()
 
             self._hub.set_dependencies([
                 DependencyView("ffmpeg", self.ffmpeg),
@@ -81,37 +77,6 @@ class DependencyManager:
             archive.unlink(missing_ok=True)
 
         self._hub.info(f"ffmpeg installed to {target}")
-        return str(target)
-
-    async def _ensure_go_librespot(self) -> str | None:
-        existing = resolve("go-librespot.exe")
-        if existing:
-            return existing
-
-        target = paths.BIN_DIR / "go-librespot.exe"
-        self._hub.info("go-librespot not found - downloading (~5 MB)")
-        archive = Path(tempfile.gettempdir()) / f"streamuse-librespot-{os.getpid()}.tar.gz"
-
-        try:
-            await self._download(GO_LIBRESPOT_URL, archive, "go-librespot")
-            with tarfile.open(archive) as tf:
-                member = next(
-                    (m for m in tf.getmembers() if m.name.lower().endswith("go-librespot.exe")), None)
-                if member is None:
-                    self._hub.error("go-librespot archive did not contain go-librespot.exe")
-                    return None
-                source = tf.extractfile(member)
-                if source is None:
-                    self._hub.error("go-librespot archive entry could not be read")
-                    return None
-                target.write_bytes(source.read())
-        except Exception as exc:
-            self._hub.error(f"go-librespot download failed: {exc}")
-            return None
-        finally:
-            archive.unlink(missing_ok=True)
-
-        self._hub.info(f"go-librespot installed to {target}")
         return str(target)
 
     async def _ensure_single(self, exe: str, url: str, label: str) -> str | None:

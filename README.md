@@ -24,8 +24,9 @@ both into 1-second mpegts HLS segments - the format VRChat's AVPro player handle
 uv run streamuse
 ```
 
-On first launch it downloads `ffmpeg.exe`, `cloudflared.exe` and `go-librespot.exe` into
-`%LOCALAPPDATA%\StreaMuse\bin` (~150 MB, once). Progress shows in the Stream health log.
+On first launch it downloads `ffmpeg.exe` and `cloudflared.exe` into `%LOCALAPPDATA%\StreaMuse\bin`
+(~135 MB, once). Progress shows in the Stream health log; the AirPlay speaker is advertised before
+the download starts, so Apple Music can pick it straight away.
 
 Then:
 
@@ -88,5 +89,7 @@ uv run pyinstaller streamuse.spec --noconfirm   # dist/StreaMuse.exe
 CI builds the same one-file exe on every push and attaches it to a release on a `v*` tag.
 
 **Spotify needs one extra step for now.** go-librespot's Windows build cannot write audio to a pipe;
-`vendor/go-librespot/` holds the small patch that fixes it and the steps to build and publish the
-binary. Until that release exists, Spotify is shown as unavailable and Apple Music works normally.
+`vendor/go-librespot/` holds the small patch that fixes it and the steps to build the binary. No
+go-librespot release carries the patch, so `go-librespot.exe` is never downloaded - build it and drop
+it in `%LOCALAPPDATA%\StreaMuse\bin`. Without it Spotify is shown as unavailable and Apple Music
+works normally.

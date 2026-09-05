@@ -136,13 +136,16 @@ def main() -> None:
 
 
 async def _prepare(hub, deps, sources, settings) -> None:
+    # The receiver needs none of the downloads, and behind ~135 MB of them a first launch offers
+    # Apple Music no speaker to pick for minutes. ffmpeg and cloudflared are wanted later, by the
+    # stream and tunnel buttons, and both say so themselves when they are missing.
+    sources.start_publishing()
+    await sources.select(settings.source)
+
     try:
         await deps.ensure_all()
     except Exception as exc:
         hub.error(f"dependency check failed: {exc}")
-
-    sources.start_publishing()
-    await sources.select(settings.source)
 
 
 def _shutdown(runtime, hub, pipeline, sources, tunnel, runners) -> None:

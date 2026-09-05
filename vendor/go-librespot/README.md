@@ -17,10 +17,11 @@ without it.
 4. Run the repository's own Windows build (`windows-2022`, MSYS2 `MINGW64` with
    `mingw-w64-x86_64-{gcc,pkg-config,libogg,libvorbis,flac,mpg123}`, then
    `go build -o go-librespot.exe -ldflags "-s -w" ./cmd/daemon`).
-5. Attach `go-librespot_windows_amd64.tar.gz` to a release named `go-librespot-0.9.0-winpipe`
-   on **this** repository. `GO_LIBRESPOT_URL` in `src/streamuse/deps.py` points at it.
-6. Open the change upstream. Once a go-librespot release carries it, point `GO_LIBRESPOT_URL` at
-   theirs and delete this directory.
+5. Put `go-librespot.exe` in `%LOCALAPPDATA%\StreaMuse\bin` or anywhere on PATH.
+   `DependencyManager.go_librespot` resolves it live, so a running app picks it up.
+6. Open the change upstream. Once a go-librespot release carries it, download that release the way
+   `_ensure_single` downloads cloudflared and delete this directory.
 
-Until that release exists the Spotify source is offered as unavailable and Apple Music is
-unaffected.
+Nothing downloads this binary: a URL for a build that does not exist yet only produces a failed
+download in every Apple Music user's log. Without it the Spotify source is offered as unavailable
+and Apple Music is unaffected.

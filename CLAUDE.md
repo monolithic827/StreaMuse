@@ -164,6 +164,10 @@ panel still receives the version as a number: nothing validates it there.
   aborting the writers and closing the servers under them. The wait is bounded.
 - The receiver is *not* part of the session. It runs whenever selected and `push_audio` drops what it
   delivers while no session exists, so selecting a source and starting a stream stay independent.
+- `app._prepare` starts the receiver **before** `deps.ensure_all`. The receiver needs none of the
+  downloads, and behind ~135 MB of them a first launch offers Apple Music no speaker to pick for
+  minutes - which reads as the app being broken. ffmpeg and cloudflared are wanted later, by the
+  stream and tunnel buttons, and both report their own absence.
 
 **AirPlay**
 - Apple Music and iTunes for Windows speak **AirPlay 1 (RAOP) only** - confirmed by shairport-sync's
@@ -207,6 +211,11 @@ panel still receives the version as a number: nothing validates it there.
   system default device with no way to select another. `vendor/go-librespot/` holds the one-file patch
   that implements the pipe there and the steps to build it; until that binary exists the Spotify
   source reports itself unavailable and Apple Music is unaffected.
+- **`go-librespot.exe` is resolved, never downloaded.** No release carries the patch, so a URL for it
+  is a URL that 404s - which it did, on every launch, as a red error in the log of everyone using
+  Apple Music. `DependencyManager.go_librespot` is a property over `resolve`, which also means a
+  binary built and dropped into `BIN_DIR` needs no restart. Restore a download only against an asset
+  that exists.
 - The named pipe instance must exist **before** the daemon starts, because go-librespot is the client
   and its open fails outright when nothing is listening.
 - go-librespot closes the pipe on stop and on playback moving to another device, and reopens it on the
