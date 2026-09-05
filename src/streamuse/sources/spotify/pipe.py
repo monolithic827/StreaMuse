@@ -8,16 +8,37 @@ pacer fills the silence in between and never learns that anything happened.
 
 import _winapi
 import threading
+import time
+
+from .. import SAMPLE_RATE
 
 PIPE_NAME = r"\\.\pipe\streamuse-spotify"
 
 #: s16le stereo, so a partial read must not split a frame.
 FRAME_BYTES = 4
 READ_SIZE = 1 << 16
-BUFFER_SIZE = 1 << 20
+# go-librespot's write() only blocks once this fills, and that blocking is its only pacing - on
+# Unix that role is played by a real device's small hardware buffer. Sized for ~6 seconds, this let
+# go-librespot dump several seconds of pre-buffered audio in almost instantly on connect, which its
+# own position tracking (advanced by the same write) then reports as "played" well before this
+# reader has actually forwarded it - a fixed lag baked in from the first sample of every track.
+# Small enough that a real hardware buffer would look similar, this makes writes block quickly
+# enough that go-librespot can never get more than a fraction of a second ahead of what has
+# actually reached AudioPacer.
+BUFFER_SIZE = 1 << 15
 
 #: PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT are all zero.
 PIPE_MODE_BYTE = 0
+
+#: How far ahead of real time the drain may run before it starts throttling.
+LEAD_SECONDS = 0.2
+
+#: Beyond this much behind, treat it as a stall rather than debt to pay back. Otherwise a moment
+#: where this thread doesn't get scheduled - go-librespot keeps writing into the pipe's kernel
+#: buffer regardless - would flush as an unthrottled burst once it resumes, which is exactly what
+#: the throttle exists to prevent. AudioPacer already fills a gap like this with silence, the same
+#: way it does for a genuinely paused source.
+MAX_CATCH_UP_SECONDS = 0.5
 
 
 class PipeReader:
@@ -90,6 +111,13 @@ class PipeReader:
 
         self.connected = True
         tail = b""
+        # go-librespot's pipe output has no pacing of its own: on Unix, a FIFO's reader is real audio
+        # hardware, and its write() blocking on a full buffer is what paces the whole decode loop to
+        # real time. Draining as fast as bytes arrive removes that backpressure entirely, so
+        # go-librespot decodes and delivers an entire track in a few CPU-bound seconds, then considers
+        # it finished and skips to the next one. Sleeping here to match real time is what makes its
+        # writes block on a full pipe the way a real device would.
+        deadline = time.monotonic()
 
         while not self._stop.is_set():
             data, _ = _winapi.ReadFile(handle, READ_SIZE)
@@ -101,3 +129,11 @@ class PipeReader:
             tail = data[keep:]
             if keep:
                 self._loop.call_soon_threadsafe(self._on_pcm, data[:keep])
+
+            deadline += (keep // FRAME_BYTES) / SAMPLE_RATE
+            now = time.monotonic()
+            ahead = deadline - now - LEAD_SECONDS
+            if ahead > 0:
+                time.sleep(ahead)
+            elif ahead < -MAX_CATCH_UP_SECONDS:
+                deadline = now + LEAD_SECONDS
