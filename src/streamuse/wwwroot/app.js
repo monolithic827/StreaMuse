@@ -116,7 +116,8 @@ function buildView() {
     uptimeLabel: 'up ' + clock(encoder.uptimeSeconds),
 
     running: running,
-    connected: connected
+    connected: connected,
+    playing: now.playing
   };
 }
 
@@ -148,6 +149,11 @@ function render() {
   for (const button of document.querySelectorAll('[data-main-button]')) {
     button.classList.toggle('btn-primary', !view.running);
     button.classList.toggle('btn-secondary', view.running);
+  }
+
+  const playpauseButton = document.querySelector('[data-player="playpause"]');
+  for (const icon of playpauseButton.querySelectorAll('[data-playpause-icon]')) {
+    icon.style.display = icon.dataset.playpauseIcon === (view.playing ? 'pause' : 'play') ? '' : 'none';
   }
 
   const tunnelButton = document.querySelector('[data-tunnel-button]');
