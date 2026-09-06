@@ -106,13 +106,7 @@ def build_app(hub, deps, artwork, settings, pipeline, tunnel, sources, dj,
             raise web.HTTPBadRequest()
 
         video_id = str(body.get("videoId") or "").strip() or None
-
-        accepted, error, entry = dj.request(query, video_id)
-        if not accepted:
-            raise web.HTTPBadRequest(
-                text=dumps({"detail": error or "could not queue that request"}),
-                content_type="application/json")
-        return _json(asdict(entry))
+        return _json(asdict(dj.request(query, video_id)))
 
     async def dj_search(request):
         try:

@@ -47,6 +47,16 @@ the spec adds it explicitly and `paths.wwwroot()` resolves it identically from a
 unpacked bundle; editing the panel needs no rebuild when running from source.
 
 There is **no test project**. Verification is done by running the app and checking real behaviour.
+
+**Never launch the app as a background job from an agent or IDE shell.** Doing so once took the whole
+VS Code instance down with it when the process was reaped: the app died without running `_shutdown`
+(its log ends mid-session with no teardown lines), and the editor went with it. The exact mechanism
+was never pinned down - `jobs.py` is not it, since that only ever adopts our own children and they
+were confirmed dead and cleaned up - so treat this as a rule rather than something to reason around.
+Either have the human start it (`! uv run streamuse` from the Claude Code prompt puts its output in
+the conversation), or run it in the foreground with an explicit timeout and stop it yourself before
+the turn ends. Stopping the *stream* and the *tunnel* over the API is safe and unrelated.
+
 Useful techniques used in practice:
 
 - `curl http://127.0.0.1:7788/api/state` - full state as JSON; poll it in a loop to catch flapping.
@@ -246,6 +256,12 @@ panel still receives the version as a number: nothing validates it there.
 - A device is persisted by **name**, not index - WASAPI device indices shift when devices are
   plugged/unplugged, and PyAudioWPatch's device info exposes no more stable identifier than the
   name, so this is the same tradeoff `receiverName`/`spotifyConnectDeviceName` already accept.
+- **PortAudio snapshots the device list when it initialises**, so a device plugged in after launch is
+  invisible to a long-lived instance forever. Measured on this machine: 75 ms to create an instance
+  against 0.04 ms to walk its snapshot, and `available`/`reason` are polled about twice a second - so
+  `DeviceReceiver` keeps one instance and recreates it only when the configured name is missing from
+  it, throttled to `RESCAN_INTERVAL` and never while a stream is open on it. `list_devices()` (the
+  settings dropdown) always uses a throwaway instance, so the list offered is never the stale one.
 - Changing the configured device while "device" is already the selected source does not restart
   capture - consistent with existing behavior (`save_settings` only calls `sources.select()` when
   `settings.source` itself changes), not something new to solve here.
@@ -290,9 +306,29 @@ panel still receives the version as a number: nothing validates it there.
   against real, ambiguous material the way `beatgrid.py`'s own confidence threshold was calibrated
   against real tracks - key detection genuinely can be wrong on atonal or percussion-heavy material,
   and `pick_next` should be re-measured against real picks before trusting it blindly.
-- `TrackLibrary` is only ever touched from the asyncio loop (harvesting and analysis are both
-  loop-scheduled background tasks) - unlike `DjMixer` itself, nothing here runs on a receiver thread,
-  so it needs no `threading.Lock` the way `DjMixer`'s state does for `observe_live`.
+- **Nothing in `dj/` is touched from a receiver thread, so none of it takes a lock.** `mix()` runs on
+  the pacer's tick, fetching/analysis/harvesting are loop-scheduled tasks, and the web handlers and
+  the frame renderer are on the loop too - every entry point is the one thread. Adding a call from a
+  receiver thread (the obvious candidate being "feed the live audio from `push_audio`") puts the lock
+  back and is not what the rolling grid wants anyway - see the next point.
+- **The live beat grid is fed from `mix()`, not from `push_audio`.** The anchor it publishes is
+  compared against `_stream_frames`, so the buffer it is read from has to be on that same timeline:
+  `push_audio` sees audio before the pacer's ~200 ms jitter reserve, which would leave every drop a
+  fraction of a beat early. `_remember_live` therefore appends the very chunk being written, and
+  `_refresh_live_grid` reads the playhead together with the window, before `analyze()` takes any time.
+- **A cued transition starts in the future, and the record on air has to keep playing until it does.**
+  `_start_frame` is up to a phrase (2-6 beats) ahead of the block that scheduled it, so `mix()` plays
+  the departing deck over `[0, active_start)` rather than falling through to the live source - which
+  is paused by then, so the fall-through was measured as 2.5 s of digital silence before every
+  deck-to-deck handover.
+- **The captured app is resumed during a track's own outro, not when the deck retires.** The envelope
+  ramps live audio back in over the closing beats; `mix()` therefore drives `_set_source_paused` from
+  what the envelope actually wants each block, and a resume at retirement would crossfade into a
+  source that is still paused.
+- A request that fails to fetch, or that audition rejects, leaves the queue and is marked unplayable
+  in the library. Both matter: a terminal entry left in the queue is a row nothing ever retires and a
+  count `_phase_text` keeps reporting, and in Rave mode the replacement picked for the failure is the
+  same track again - `pick_next` is deterministic and nothing else about its inputs has changed.
 
 **Serialization and background tasks**
 - Never put a non-finite `float` into anything serialized. `state.dumps` passes `allow_nan=False`, so
@@ -383,18 +419,22 @@ resampler saw the audio), which point at the harness rather than `_Resampler` gi
 already confirmed it exactly preserves frequency, but this was not run to ground. Route a real app's
 output to a real device and listen to the resulting stream before trusting pitch on real content.
 
-**Rave DJ mode and the learned library** are verified piecewise against synthetic/mocked inputs, not
-yet against a real playing source. Confirmed: key detection recovers the exact key (and correct
-relative-major/minor Camelot pairing) on synthetic chords; `TrackLibrary.pick_next` correctly prefers
-an adjacent key and close tempo and correctly excludes recently-played tracks, verified against a
-small hand-built library; `harvester.harvest_live_source`'s polling/loop-detection logic (stop on the
-starting track reappearing, stop on any repeat, stop on a timeout with no change) all verified against
-a mocked receiver standing in for real DACP/go-librespot timing. **Not yet run against an actual
-playing Apple Music or Spotify session** - a live end-to-end test (advertise as a Spotify Connect
-device, have a phone actually connect and play a real playlist, harvest it for real) was set up but
-not completed. The mocked timing may not match how quickly real metadata actually arrives after a
-real "next" command; re-verify `skip_timeout`/`SKIP_POLL_INTERVAL` against real DACP/go-librespot
-before trusting the harvester's stop conditions on a real playlist.
+**The DJ mixer's request path is verified end to end.** With the Playback Device source selected and
+the stream running, a real request was fetched, auditioned, beat-read and mixed, and the published
+HLS segments carried it (peak 0.96, RMS 0.23, no silence). The mix path itself is verified by driving
+`DjMixer.mix()` with synthetic click tracks: the live anchor lands on the source's beat grid and stays
+there as the stream lengthens, a deck-to-deck handover leaves no silent gap, the captured app is
+paused and resumed with seconds of lead before the hand-back, a permanently failing Rave pick is tried
+once rather than looped on, and the rewritten `Biquad` matches the direct-form-I original to 1e-12.
+
+**Rave mode's autonomous picking is still only verified against a stubbed library**, and the harvester
+against a mocked receiver: key detection recovers the exact key (and correct relative-major/minor
+Camelot pairing) on synthetic chords, `pick_next` prefers an adjacent key and close tempo and excludes
+recent and unplayable tracks, and `harvest_live_source`'s stop conditions (the starting track
+reappearing, any repeat, a timeout with no change) behave against mocked timing. **Not yet run against
+an actual playing Apple Music or Spotify session** - the mocked timing may not match how quickly real
+metadata arrives after a real "next", so re-verify `SKIP_TIMEOUT`/`SKIP_POLL_INTERVAL` against real
+DACP/go-librespot before trusting the harvester's stop conditions on a real playlist.
 
 The pipeline, both web surfaces, the tunnel, the frozen exe and the panel have been verified by
 running them.

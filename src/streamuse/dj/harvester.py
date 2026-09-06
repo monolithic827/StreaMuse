@@ -18,9 +18,15 @@ from . import fetch as fetch_module
 
 SKIP_POLL_INTERVAL = 0.3
 
+#: How long a skip may produce no metadata change before the queue is taken to have ended - neither
+#: DACP nor go-librespot says so directly, both only ack the command.
+SKIP_TIMEOUT = 5.0
 
-async def harvest_live_source(sources, hub, fetcher, max_tracks: int = 200,
-                              skip_timeout: float = 5.0) -> list[tuple[str, str, str]]:
+MAX_LIVE_TRACKS = 200
+MAX_PLAYLIST_TRACKS = 500
+
+
+async def harvest_live_source(sources, hub, fetcher) -> list[tuple[str, str, str]]:
     """Returns (video_id, title, artist) triples. Neither AirPlay's DACP nor go-librespot hands over a
     video_id, so each harvested (title, artist) pair is resolved through the same YouTube Music search
     a manual request already uses - taking the first hit, same as fetch() does when nothing more
@@ -32,18 +38,18 @@ async def harvest_live_source(sources, hub, fetcher, max_tracks: int = 200,
     pairs: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
 
-    started = (receiver.track().title, receiver.track().artist)
+    started = _now_playing(receiver)
     if started != ("", ""):
         seen.add(started)
         pairs.append(started)
 
-    while len(pairs) < max_tracks:
-        previous = (receiver.track().title, receiver.track().artist)
+    while len(pairs) < MAX_LIVE_TRACKS:
+        previous = _now_playing(receiver)
         if not await sources.control("next"):
             hub.warn("dj library: 'next' was refused - stopping the harvest here")
             break
 
-        current = await _wait_for_change(receiver, previous, skip_timeout)
+        current = await _wait_for_change(receiver, previous)
         if current is None:
             break  # no change within the timeout - end of queue, or a repeat-one loop
         if current == started or current in seen:
@@ -67,20 +73,23 @@ async def harvest_live_source(sources, hub, fetcher, max_tracks: int = 200,
     return resolved
 
 
-async def _wait_for_change(receiver, previous: tuple[str, str],
-                           timeout: float) -> tuple[str, str] | None:
+def _now_playing(receiver) -> tuple[str, str]:
+    track = receiver.track()
+    return track.title, track.artist
+
+
+async def _wait_for_change(receiver, previous: tuple[str, str]) -> tuple[str, str] | None:
     elapsed = 0.0
-    while elapsed < timeout:
+    while elapsed < SKIP_TIMEOUT:
         await asyncio.sleep(SKIP_POLL_INTERVAL)
         elapsed += SKIP_POLL_INTERVAL
-        current = (receiver.track().title, receiver.track().artist)
+        current = _now_playing(receiver)
         if current != previous and current != ("", ""):
             return current
     return None
 
 
-async def harvest_youtube_playlist(deps, hub, url: str,
-                                   max_tracks: int = 500) -> list[tuple[str, str, str]]:
+async def harvest_youtube_playlist(deps, hub, url: str) -> list[tuple[str, str, str]]:
     """Returns (video_id, title, artist) triples directly - a playlist URL names every track's own
     video, so unlike the live-source harvest there's no search-resolution step needed."""
     if deps.yt_dlp is None:
@@ -89,7 +98,7 @@ async def harvest_youtube_playlist(deps, hub, url: str,
     process = await asyncio.create_subprocess_exec(
         deps.yt_dlp,
         "--flat-playlist", "--quiet", "--no-warnings",
-        "--playlist-items", f"1-{max_tracks}",
+        "--playlist-items", f"1-{MAX_PLAYLIST_TRACKS}",
         "--print", fetch_module.SEPARATOR.join(
             ("%(id)s", "%(track,title)s", "%(artist,uploader,channel)s")),
         url,

@@ -21,8 +21,6 @@ _MAJOR_PROFILE = np.array(
 _MINOR_PROFILE = np.array(
     [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17])
 
-_PITCH_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
-
 #: Camelot number for each pitch class, major and minor separately - relative major/minor pairs
 #: share a number by construction (e.g. C major and A minor are both "8"), which is the entire
 #: point of the notation: adjacent numbers, or the same number's other letter, mix cleanly.

@@ -29,7 +29,7 @@ _FONTS = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
 
 
 class CoverFrameRenderer:
-    def __init__(self, settings, artwork, hub, dj=None) -> None:
+    def __init__(self, settings, artwork, hub, dj) -> None:
         self._artwork = artwork
         self._hub = hub
         self._dj = dj
@@ -58,8 +58,8 @@ class CoverFrameRenderer:
 
     def render(self) -> bytes:
         """Current frame as JPEG, re-rendered only when something visible changed."""
-        dj_state = self._dj.snapshot() if self._dj is not None else None
-        playing = dj_state.nowMixing if dj_state is not None else None
+        dj_state = self._dj.snapshot()
+        playing = dj_state.nowMixing
         mixing = playing is not None
 
         if mixing:
@@ -127,7 +127,7 @@ class CoverFrameRenderer:
         shade = Image.new("RGBA", (width, height), SHADE)
         ground.paste(shade, (0, 0), shade)
 
-    def _draw_text(self, frame: Image.Image, now, progress: float, mixing: bool = False) -> None:
+    def _draw_text(self, frame: Image.Image, now, progress: float, mixing: bool) -> None:
         width, height = self._width, self._height
         left = self._art_box[2] + width * 0.045
         right = width - width * 0.05

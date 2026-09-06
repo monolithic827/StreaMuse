@@ -2,11 +2,11 @@
 read playlist (see harvester.py), analyzed in the background, and never touched by Radio DJ mode.
 
 Only ever driven from the asyncio loop (harvesting and analysis are both background tasks created on
-it), unlike DjMixer itself - nothing here is called from a receiver thread, so no threading.Lock is
-needed the way DjMixer's own state requires one for observe_live()."""
+it), so nothing here needs a lock."""
 
 import asyncio
 import json
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -19,37 +19,27 @@ CLIP_SECONDS = 30
 #: gates a beatmatch on, so an autonomous pick is never trusted further than a listener's own would be.
 CONFIDENCE_FLOOR = beatgrid.CONFIDENCE_THRESHOLD
 
+#: How often analysis progress is written back. Learning a playlist takes long enough that closing
+#: the app partway through it is a normal thing to do, and the harvest that produced the candidates
+#: was real playback nobody wants to sit through twice.
+CHECKPOINT_EVERY = 5
 
+_PERSISTED = ("video_id", "title", "artist", "bpm", "confidence", "camelot", "energy", "analyzed")
+
+
+@dataclass
 class LibraryEntry:
-    def __init__(self, video_id: str, title: str, artist: str, source: str) -> None:
-        self.video_id = video_id
-        self.title = title
-        self.artist = artist
-        self.source = source
-        self.bpm = 0.0
-        self.confidence = 0.0
-        self.camelot = ""
-        self.energy = 0.0
-        self.analyzed = False
-        self.failed = False
-
-    def to_dict(self) -> dict:
-        return {
-            "video_id": self.video_id, "title": self.title, "artist": self.artist,
-            "source": self.source, "bpm": self.bpm, "confidence": self.confidence,
-            "camelot": self.camelot, "energy": self.energy, "analyzed": self.analyzed,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "LibraryEntry":
-        entry = cls(data["video_id"], data.get("title", ""), data.get("artist", ""),
-                    data.get("source", "harvested"))
-        entry.bpm = data.get("bpm", 0.0)
-        entry.confidence = data.get("confidence", 0.0)
-        entry.camelot = data.get("camelot", "")
-        entry.energy = data.get("energy", 0.0)
-        entry.analyzed = data.get("analyzed", False)
-        return entry
+    video_id: str
+    title: str = ""
+    artist: str = ""
+    bpm: float = 0.0
+    confidence: float = 0.0
+    camelot: str = ""
+    energy: float = 0.0
+    analyzed: bool = False
+    #: Deliberately not persisted: a track that failed to fetch or play this run is skipped for the
+    #: rest of it, but a run later is a fair chance to try again.
+    unplayable: bool = False
 
 
 class TrackLibrary:
@@ -71,29 +61,34 @@ class TrackLibrary:
             return
         for item in raw:
             try:
-                entry = LibraryEntry.from_dict(item)
+                entry = LibraryEntry(**{k: v for k, v in item.items() if k in _PERSISTED})
                 self._entries[entry.video_id] = entry
-            except (KeyError, TypeError):
+            except TypeError:
                 continue
 
     def _save(self) -> None:
+        """Writes unanalyzed candidates too, so an interrupted learning pass resumes where it
+        stopped rather than starting from the harvest again."""
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        payload = [{field: getattr(e, field) for field in _PERSISTED}
+                   for e in self._entries.values()]
         tmp = self._path.with_suffix(".json.tmp")
-        payload = [e.to_dict() for e in self._entries.values() if e.analyzed]
         tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         tmp.replace(self._path)
 
     # ---- building the library ---------------------------------------------------
 
-    def add_candidates(self, candidates: list[tuple[str, str, str]], source: str) -> int:
+    def add_candidates(self, candidates: list[tuple[str, str, str]]) -> int:
         """candidates: (video_id, title, artist) triples. Returns how many were actually new -
         already-known video_ids are left alone rather than re-queued for analysis."""
         added = 0
         for video_id, title, artist in candidates:
             if video_id in self._entries:
                 continue
-            self._entries[video_id] = LibraryEntry(video_id, title, artist, source)
+            self._entries[video_id] = LibraryEntry(video_id, title, artist)
             added += 1
+        if added:
+            self._save()
         return added
 
     async def analyze_pending(self) -> None:
@@ -101,12 +96,11 @@ class TrackLibrary:
         settings.djLibraryConcurrency concurrent fetch+decode+analyze tasks - not unbounded, since
         that many simultaneous yt-dlp downloads reads as automated abuse to YouTube's own side, and
         would starve the live mix() path for CPU besides."""
-        pending = [e for e in self._entries.values() if not e.analyzed and not e.failed]
+        pending = [e for e in self._entries.values() if not e.analyzed and not e.unplayable]
         if not pending:
             return
 
-        limit = max(1, self._settings.djLibraryConcurrency)
-        semaphore = asyncio.Semaphore(limit)
+        semaphore = asyncio.Semaphore(max(1, self._settings.djLibraryConcurrency))
         total = len(pending)
         done = 0
 
@@ -115,11 +109,11 @@ class TrackLibrary:
             async with semaphore:
                 await self._analyze_one(entry)
             done += 1
-            if done % 5 == 0 or done == total:
+            if done % CHECKPOINT_EVERY == 0 or done == total:
+                self._save()
                 self._hub.info(f"dj library: learned {done}/{total}")
 
         await asyncio.gather(*(worker(entry) for entry in pending))
-        self._save()
         self._hub.info(f"dj library: {sum(1 for e in self._entries.values() if e.analyzed)} "
                        "tracks ready to pick from")
 
@@ -135,10 +129,19 @@ class TrackLibrary:
             entry.energy = _energy_score(stereo)
             entry.analyzed = True
         except Exception as exc:
-            entry.failed = True
+            entry.unplayable = True
             self._hub.warn(f"dj library: could not learn \"{entry.title}\": {exc}")
 
     # ---- picking -----------------------------------------------------------
+
+    def mark_unplayable(self, video_id: str) -> None:
+        """Takes a track out of the running for the rest of the run. Without this an entry that
+        always fails to fetch, or that audition always rejects, is picked again the moment its own
+        failure asks for a replacement - the same track, forever, since pick_next is deterministic
+        and nothing else about the inputs has changed."""
+        entry = self._entries.get(video_id)
+        if entry is not None:
+            entry.unplayable = True
 
     def pick_next(self, after_camelot: str, after_bpm: float, recent, target_energy: float
                  ) -> LibraryEntry | None:
@@ -147,33 +150,23 @@ class TrackLibrary:
         ranked by distance from target_energy so a set can build or hold rather than picking at
         random. Never repeats one of the caller's recent picks."""
         candidates = [e for e in self._entries.values()
-                     if e.analyzed and e.confidence >= CONFIDENCE_FLOOR
+                     if e.analyzed and not e.unplayable and e.confidence >= CONFIDENCE_FLOOR
                      and e.video_id not in recent]
         if not candidates:
             return None
 
-        if after_bpm <= 0:
-            return min(candidates, key=lambda e: abs(e.energy - target_energy))
-
         def score(entry: LibraryEntry) -> float:
-            key_distance = key_module.camelot_distance(after_camelot, entry.camelot)
-            tempo_ratio = entry.bpm / after_bpm
-            tempo_distance = min(abs(tempo_ratio - 1.0), abs(tempo_ratio - 0.5), abs(tempo_ratio - 2.0))
-            energy_distance = abs(entry.energy - target_energy)
-            return key_distance * 2.0 + tempo_distance * 4.0 + energy_distance
+            # Starting cold there is no tempo to match; camelot_distance already answers the same
+            # for every candidate when after_camelot is empty, so only energy separates them.
+            tempo_distance = 0.0
+            if after_bpm > 0:
+                ratio = entry.bpm / after_bpm
+                tempo_distance = min(abs(ratio - 1.0), abs(ratio - 0.5), abs(ratio - 2.0))
+
+            return (key_module.camelot_distance(after_camelot, entry.camelot) * 2.0
+                   + tempo_distance * 4.0 + abs(entry.energy - target_energy))
 
         return min(candidates, key=score)
-
-    def get(self, video_id: str) -> LibraryEntry | None:
-        return self._entries.get(video_id)
-
-    @property
-    def analyzed_count(self) -> int:
-        return sum(1 for e in self._entries.values() if e.analyzed)
-
-    @property
-    def total_count(self) -> int:
-        return len(self._entries)
 
 
 def _energy_score(stereo: np.ndarray) -> float:

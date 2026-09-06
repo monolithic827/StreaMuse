@@ -25,9 +25,9 @@ WRITE_INTERVAL_MS = 20
 
 
 class AudioPacer:
-    def __init__(self, sample_rate: int, mixer=None) -> None:
+    def __init__(self, sample_rate: int) -> None:
         self.sample_rate = sample_rate
-        self._mixer = mixer
+        self._mixer = None
         self._lock = threading.Lock()
         self._pending: deque[bytes] = deque()
         self._head_offset = 0

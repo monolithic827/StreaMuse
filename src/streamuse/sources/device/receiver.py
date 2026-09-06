@@ -6,6 +6,7 @@ an app's own output device) into the stream.
 """
 
 import threading
+import time
 
 import numpy as np
 import pyaudiowpatch as pyaudio
@@ -16,18 +17,21 @@ from .. import Receiver, TrackState, SAMPLE_RATE
 #: the resampler always has plenty of frames to work with per call.
 FRAMES_PER_BUFFER = 4096
 
+#: PortAudio snapshots the device list when it initialises, so a device plugged in since then stays
+#: invisible until the instance is recreated - which costs ~75 ms, against 0.04 ms to walk the
+#: snapshot. Hence a long-lived instance, rescanned only when the configured name is missing from
+#: it, and no more often than this.
+RESCAN_INTERVAL = 5.0
 
-def list_devices(pa: "pyaudio.PyAudio | None" = None) -> list[str]:
-    """Loopback-capable playback devices, for the settings dropdown and for resolving a configured
-    name back to a live device. Takes an existing PyAudio instance when the caller already holds
-    one (DeviceReceiver polls this every publish tick), or opens a throwaway one otherwise."""
-    owns = pa is None
-    pa = pa or pyaudio.PyAudio()
+
+def list_devices() -> list[str]:
+    """Loopback-capable playback devices, for the settings dropdown. Its own PyAudio instance, so
+    the list is enumerated fresh every time it is asked for."""
+    pa = pyaudio.PyAudio()
     try:
         return [dev["name"] for dev in pa.get_loopback_device_info_generator()]
     finally:
-        if owns:
-            pa.terminate()
+        pa.terminate()
 
 
 class DeviceReceiver(Receiver):
@@ -38,10 +42,8 @@ class DeviceReceiver(Receiver):
         self._hub = hub
 
         self._track = TrackState()
-        # Held for the receiver's whole life, not per lookup - available/reason are polled once a
-        # second by SourceManager even while this isn't the selected source, and creating a fresh
-        # PyAudio instance that often would be pure waste.
         self._pa = pyaudio.PyAudio()
+        self._scanned_at = time.monotonic()
 
         self._sink = None
         self._stream = None
@@ -126,6 +128,20 @@ class DeviceReceiver(Receiver):
         name = self._settings.deviceCaptureName
         if not name:
             return None
+
+        device = self._find(name)
+        now = time.monotonic()
+        # Not while capturing: the miss would have to be the configured device disappearing under an
+        # open stream, and tearing PortAudio down beneath one is worse than a stale answer.
+        if device is None and self._stream is None and now - self._scanned_at >= RESCAN_INTERVAL:
+            self._scanned_at = now
+            self._pa.terminate()
+            self._pa = pyaudio.PyAudio()
+            device = self._find(name)
+
+        return device
+
+    def _find(self, name: str) -> dict | None:
         return next((d for d in self._pa.get_loopback_device_info_generator()
                     if d["name"] == name), None)
 

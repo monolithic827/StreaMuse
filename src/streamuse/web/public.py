@@ -46,7 +46,7 @@ def is_safe_name(name: str) -> bool:
         "/" in name or "\\" in name or ".." in name or _DRIVE_RELATIVE.match(name))
 
 
-def build_app(hub, artwork, settings, dj=None) -> web.Application:
+def build_app(hub, artwork, settings, dj) -> web.Application:
     app = web.Application()
     app.router.add_route("*", "/{tail:.*}", _make_handler(hub, artwork, settings, dj))
     return app
@@ -163,8 +163,8 @@ def _serve_now(request: web.Request, hub, dj) -> web.Response:
     # The DJ track is already what the video shows once it's mixing (see CoverFrameRenderer), so
     # this has to agree with it - otherwise a listener combining the two sees a paused source's
     # metadata under audibly different, currently-playing audio.
-    dj_state = dj.snapshot() if dj is not None else None
-    playing_track = dj_state.nowMixing if dj_state is not None else None
+    dj_state = dj.snapshot()
+    playing_track = dj_state.nowMixing
 
     if hub.encoder.status == RUNNING and playing_track is not None:
         payload = {
@@ -203,11 +203,8 @@ def _serve_art(request: web.Request, hub, artwork, dj) -> web.StreamResponse:
     if hub.encoder.status != RUNNING:
         return _not_found()
 
-    dj_state = dj.snapshot() if dj is not None else None
-    if dj_state is not None and dj_state.nowMixing is not None:
-        version, data = dj.artwork.current
-    else:
-        version, data = artwork.current
+    mixing = dj.snapshot().nowMixing is not None
+    version, data = dj.artwork.current if mixing else artwork.current
 
     if not data:
         return _not_found()

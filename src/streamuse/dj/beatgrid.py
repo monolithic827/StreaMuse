@@ -11,7 +11,7 @@ noise ceiling sits much higher (see CONFIDENCE_THRESHOLD below), so the threshol
 recalibrated against this formula rather than copied.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -27,10 +27,6 @@ MAX_BPM = 180.0
 #: 0.55 sits with real margin above the noise ceiling while real click tracks in the same test
 #: scored 0.98+.
 CONFIDENCE_THRESHOLD = 0.55
-
-#: A 0.5x/1x/2x tempo ratio within this fraction still counts as agreeing - a half-time or
-#: double-time record is a normal thing to beatmatch against.
-TEMPO_TOLERANCE = 0.03
 
 #: First beat of a run this long is where the groove has actually locked in - the real DJ cueing
 #: decision, not the track's technical start or its very first detected onset.
@@ -63,17 +59,12 @@ _OCTAVE_SWITCH_MIN_CONFIDENCE = 0.7
 class BeatGrid:
     period_frames: float
     confidence: float
-    onset_frames: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
     last_beat_frame: int = 0
     mix_in_frame: int = 0
 
     @property
     def bpm(self) -> float:
         return 60.0 * SAMPLE_RATE / self.period_frames if self.period_frames > 0 else 0.0
-
-    @property
-    def is_confident(self) -> bool:
-        return self.confidence >= CONFIDENCE_THRESHOLD
 
 
 def analyze(mono: np.ndarray, sample_rate: int = SAMPLE_RATE) -> BeatGrid | None:
@@ -103,17 +94,9 @@ def analyze(mono: np.ndarray, sample_rate: int = SAMPLE_RATE) -> BeatGrid | None
     return BeatGrid(
         period_frames=period_hops * HOP_SIZE,
         confidence=confidence,
-        onset_frames=onset_frames,
         last_beat_frame=int(onset_frames[-1]),
         mix_in_frame=mix_in_frame,
     )
-
-
-def tempos_agree(period_a: float, period_b: float, tolerance: float = TEMPO_TOLERANCE) -> bool:
-    if period_a <= 0 or period_b <= 0:
-        return False
-    ratio = period_a / period_b
-    return any(abs(ratio / target - 1.0) <= tolerance for target in (0.5, 1.0, 2.0))
 
 
 def _onset_envelope(mono: np.ndarray) -> np.ndarray:

@@ -37,17 +37,17 @@ class _Session:
 
 
 class StreamPipeline:
-    def __init__(self, settings, hub, deps, artwork, tunnel, sample_rate: int, dj=None) -> None:
+    def __init__(self, settings, hub, deps, artwork, tunnel, sample_rate: int) -> None:
         self._settings = settings
         self._hub = hub
         self._deps = deps
         self._artwork = artwork
         self._tunnel = tunnel
-        self._dj = dj
+        self._dj = None
 
         self._gate = asyncio.Lock()
         self._clock = Clock()
-        self._pacer = AudioPacer(sample_rate, mixer=dj)
+        self._pacer = AudioPacer(sample_rate)
         self._meter = LevelMeter(sample_rate)
         self._sample_rate = sample_rate
         self._session: _Session | None = None
@@ -68,8 +68,6 @@ class StreamPipeline:
             return
         self._meter.add(chunk)
         self._pacer.push(chunk)
-        if self._dj is not None:
-            self._dj.observe_live(chunk)
 
     async def start(self) -> bool:
         async with self._gate:
