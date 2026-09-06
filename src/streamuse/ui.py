@@ -5,6 +5,7 @@ with no extra wiring. Both windows share one CoreWebView2Environment by both com
 webview.start() call - two separately-initialized environments over the same user-data folder is a
 documented conflict."""
 
+import threading
 import winreg
 
 import webview
@@ -86,10 +87,27 @@ def run(url: str, dj_url: str, settings) -> None:
 
 def _dock_dj_window(main_window, dj_window):
     """Matches height to the main window and sits immediately right of it - accepts *_args so the
-    same handler works for shown() (no args), moved(x, y) and resized(width, height) alike."""
+    same handler works for shown() (no args), moved(x, y) and resized(width, height) alike.
+
+    webview.Event.set() spawns a fresh thread per firing, and WinForms fires `moved` continuously
+    while the window is being dragged - dozens of overlapping reposition threads with nothing
+    serializing them. Without the lock below, an older thread can finish after a newer one and snap
+    the DJ window back to a stale position, which is what dragging looked like before this: a
+    constant teleport rather than a smooth follow. `busy.acquire(blocking=False)` drops a reposition
+    entirely when one is already running instead of queuing it - safe to drop, since the one already
+    in flight reads the window's position fresh at the moment it actually runs, not a value captured
+    back when its event fired, so the drag's true final position is still what gets applied once
+    dragging stops and the last `moved` event finds the lock free."""
+    busy = threading.Lock()
+
     def reposition(*_args) -> None:
-        dj_window.resize(dj_window.width, main_window.height)
-        dj_window.move(main_window.x + main_window.width, main_window.y)
+        if not busy.acquire(blocking=False):
+            return
+        try:
+            dj_window.resize(dj_window.width, main_window.height)
+            dj_window.move(main_window.x + main_window.width, main_window.y)
+        finally:
+            busy.release()
 
     return reposition
 
