@@ -66,7 +66,7 @@ class AirPlayReceiver(Receiver):
     @property
     def status_text(self) -> str:
         if self._rtsp is None:
-            return "AirPlay receiver stopped"
+            return "AirPlay isn't running - the RTSP server stopped"
         if not self._recording:
             return f"AirPlay speaker '{self._name}' - waiting for Apple Music"
         return f"Apple Music connected from {self._session.address}"

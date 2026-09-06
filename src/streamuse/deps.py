@@ -2,7 +2,8 @@
 
 The exe ships all three, so nothing here runs for the people who download one. From a source
 checkout ffmpeg and cloudflared are downloaded into the app's own bin folder instead, and
-go-librespot is only ever looked for - see vendor/go-librespot/README.md."""
+go-librespot is only ever looked for - see vendor/go-librespot/README.md and CLAUDE.md's Spotify
+section for why its audio-decoding DLLs are the one part of it that gets downloaded."""
 
 import asyncio
 import os
@@ -23,6 +24,13 @@ CLOUDFLARED_URL = (
     "https://github.com/cloudflare/cloudflared/releases/latest/download/"
     "cloudflared-windows-amd64.exe"
 )
+GO_LIBRESPOT_LIBS_URL = (
+    "https://github.com/monolithic827/StreaMuse/releases/latest/download/"
+    "go-librespot-libs.zip"
+)
+
+#: go-librespot's dynamically-linked audio libraries - see CLAUDE.md's Spotify section.
+GO_LIBRESPOT_LIBS = ("libmpg123-0.dll", "libFLAC.dll", "libvorbisenc-2.dll", "libvorbis-0.dll")
 
 USER_AGENT = "StreaMuse/1.0"
 
@@ -47,6 +55,7 @@ class DependencyManager:
             paths.BIN_DIR.mkdir(parents=True, exist_ok=True)
             self.ffmpeg = await self._ensure_ffmpeg()
             self.cloudflared = await self._ensure_single("cloudflared.exe", CLOUDFLARED_URL, "cloudflared")
+            await self._ensure_librespot_libs()
 
             self._hub.set_dependencies([
                 DependencyView("ffmpeg", self.ffmpeg),
@@ -81,6 +90,29 @@ class DependencyManager:
 
         self._hub.info(f"ffmpeg installed to {target}")
         return str(target)
+
+    async def _ensure_librespot_libs(self) -> None:
+        exe = self.go_librespot
+        if exe is None:
+            return
+
+        if _has_libs(Path(exe).parent) or _has_libs(paths.BIN_DIR):
+            return
+
+        target = Path(tempfile.gettempdir()) / f"streamuse-librespot-libs-{os.getpid()}.zip"
+        self._hub.info("go-librespot audio libraries not found - downloading")
+
+        try:
+            await self._download(GO_LIBRESPOT_LIBS_URL, target, "go-librespot libraries")
+            with zipfile.ZipFile(target) as zf:
+                zf.extractall(paths.BIN_DIR)
+        except Exception as exc:
+            self._hub.error(f"go-librespot libraries download failed: {exc}")
+            return
+        finally:
+            target.unlink(missing_ok=True)
+
+        self._hub.info(f"go-librespot libraries installed to {paths.BIN_DIR}")
 
     async def _ensure_single(self, exe: str, url: str, label: str) -> str | None:
         existing = resolve(exe)
@@ -147,3 +179,7 @@ def resolve(exe: str) -> str | None:
             continue
 
     return None
+
+
+def _has_libs(directory: Path) -> bool:
+    return all((directory / name).is_file() for name in GO_LIBRESPOT_LIBS)

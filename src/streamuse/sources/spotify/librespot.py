@@ -7,6 +7,7 @@ no re-pick.
 """
 
 import asyncio
+import os
 import subprocess
 
 from ... import jobs, paths
@@ -58,12 +59,18 @@ class LibrespotProcess:
     async def start(self, executable: str, device_name: str, api_port: int) -> None:
         write_config(paths.LIBRESPOT_DIR, device_name, api_port)
 
+        # BIN_DIR on PATH so a downloaded audio DLL is found regardless of where the exe itself
+        # runs from - see CLAUDE.md's Spotify section.
+        env = os.environ.copy()
+        env["PATH"] = str(paths.BIN_DIR) + os.pathsep + env.get("PATH", "")
+
         self._process = await asyncio.create_subprocess_exec(
             executable, "--config_dir", str(paths.LIBRESPOT_DIR),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             creationflags=CREATE_NO_WINDOW,
+            env=env,
         )
         jobs.adopt(self._process)
 
