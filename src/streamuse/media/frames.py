@@ -26,10 +26,11 @@ TRACK = (0xFF, 0xFF, 0xFF, 0x33)
 
 _FONTS = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
 
-_FALLBACK_TITLE = ["YuGothB.ttc", "ebrima.ttf", "gadugi.ttf", "NirmalaB.ttf", "leelawui.ttf",
-                   "seguisym.ttf", "himalaya.ttf", "msyi.ttf", "phagspa.ttf"]
-_FALLBACK_BODY = ["YuGothR.ttc", "ebrima.ttf", "gadugi.ttf", "Nirmala.ttf", "leelawui.ttf",
-                  "seguisym.ttf", "himalaya.ttf", "msyi.ttf", "phagspa.ttf"]
+_SPECIALTY = [("ebrima.ttf", 0), ("gadugi.ttf", 0), ("LeelawUI.ttf", 0), ("seguisym.ttf", 0),
+              ("himalaya.ttf", 0), ("msyi.ttf", 0), ("phagspa.ttf", 0)]
+
+_TITLE_FONTS = [("seguisb.ttf", 0), ("YuGothB.ttc", 0), ("Nirmala.ttc", 1), *_SPECIALTY]
+_BODY_FONTS = [("segoeui.ttf", 0), ("YuGothR.ttc", 0), ("Nirmala.ttc", 0), *_SPECIALTY]
 
 
 class CoverFrameRenderer:
@@ -41,16 +42,9 @@ class CoverFrameRenderer:
         self._height = settings.height
         self._overlay = settings.textOverlay
 
-        self._title_font_path = _FONTS / "seguisb.ttf"
-        self._body_font_path = _FONTS / "segoeui.ttf"
-
-        self._title_font = ImageFont.truetype(self._title_font_path, self._height * 0.075)
-        self._body_font = ImageFont.truetype(self._body_font_path, self._height * 0.045)
-        self._small_font = ImageFont.truetype(self._body_font_path, self._height * 0.033)
-
-        self._title_fallbacks = _load_fonts(_FALLBACK_TITLE, self._height * 0.075)
-        self._body_fallbacks = _load_fonts(_FALLBACK_BODY, self._height * 0.045)
-        self._small_fallbacks = _load_fonts(_FALLBACK_BODY, self._height * 0.033)
+        self._title = _FontStack(_TITLE_FONTS, self._height * 0.075)
+        self._body = _FontStack(_BODY_FONTS, self._height * 0.045)
+        self._small = _FontStack(_BODY_FONTS, self._height * 0.033)
 
         self._art_box = _square_in(self._width, self._height,
                                    0.62 if self._overlay else 0.86, align_left=self._overlay)
@@ -138,16 +132,13 @@ class CoverFrameRenderer:
         y = self._art_box[1] + height * 0.10
 
         title = now.title or "Nothing playing"
-        _draw_with_fallback(draw, (left, y), _rtl(title, self._title_font, available),
-                            self._title_font, self._title_font_path, self._title_fallbacks, BRIGHT)
+        self._title.draw(draw, (left, y), _rtl(title, self._title, available), BRIGHT)
         y += height * 0.085
 
-        _draw_with_fallback(draw, (left, y), _rtl(now.artist, self._body_font, available),
-                            self._body_font, self._body_font_path, self._body_fallbacks, MUTED)
+        self._body.draw(draw, (left, y), _rtl(now.artist, self._body, available), MUTED)
         y += height * 0.06
 
-        _draw_with_fallback(draw, (left, y), _rtl(now.album, self._small_font, available),
-                            self._small_font, self._body_font_path, self._small_fallbacks, FAINT)
+        self._small.draw(draw, (left, y), _rtl(now.album, self._small, available), FAINT)
 
         bar_y = self._art_box[3] - height * 0.06
         bar_height = max(2.0, height * 0.006)
@@ -161,9 +152,8 @@ class CoverFrameRenderer:
         total = _format_clock(now.durationSeconds) if now.durationSeconds > 0 else "--:--"
         times_y = bar_y + height * 0.045
 
-        draw.text((left, times_y), elapsed, font=self._small_font, fill=FAINT, anchor="ls")
-        draw.text((right - self._small_font.getlength(total), times_y), total,
-                  font=self._small_font, fill=FAINT, anchor="ls")
+        self._small.draw(draw, (left, times_y), elapsed, FAINT)
+        self._small.draw(draw, (right - self._small.width(total), times_y), total, FAINT)
 
         frame.paste(layer, (0, 0), layer)
 
@@ -218,58 +208,55 @@ def _fit_origin(art: Image.Image, box) -> tuple[int, int]:
             round((box[1] + box[3]) / 2 - art.height * scale / 2))
 
 
-def _ellipsize(text: str, font, max_width: float) -> str:
-    if not text or font.getlength(text) <= max_width:
+class _FontStack:
+    """The first font that has a glyph for a character is the one that draws it, since Pillow
+    substitutes nothing of its own - see CLAUDE.md."""
+
+    def __init__(self, specs, size: float) -> None:
+        self._fonts = [(ImageFont.truetype(path, size, index=index), _cmap(path, index))
+                       for name, index in specs if (path := _FONTS / name).is_file()]
+
+    def width(self, text: str) -> float:
+        return sum(font.getlength(run) for font, run in self._runs(text))
+
+    def draw(self, draw, xy, text: str, fill) -> None:
+        x, y = xy
+        for font, run in self._runs(text):
+            draw.text((x, y), run, font=font, fill=fill, anchor="ls")
+            x += font.getlength(run)
+
+    def _runs(self, text: str):
+        run, run_font = "", None
+        for ch in text:
+            font = next((f for f, cmap in self._fonts if ord(ch) in cmap), self._fonts[0][0])
+            if run and font is not run_font:
+                yield run_font, run
+                run = ""
+            run, run_font = run + ch, font
+        if run:
+            yield run_font, run
+
+
+@functools.lru_cache(maxsize=None)
+def _cmap(path: Path, index: int) -> frozenset[int]:
+    with TTFont(path, lazy=True, fontNumber=index) as face:
+        return frozenset(face.getBestCmap())
+
+
+def _ellipsize(text: str, fonts: _FontStack, max_width: float) -> str:
+    if not text or fonts.width(text) <= max_width:
         return text
 
     trimmed = text
-    while len(trimmed) > 1 and font.getlength(trimmed + "\u2026") > max_width:
+    while len(trimmed) > 1 and fonts.width(trimmed + "\u2026") > max_width:
         trimmed = trimmed[:-1]
 
     return trimmed + "\u2026"
 
 
-def _rtl(text: str, font, max_width: float) -> str:
+def _rtl(text: str, fonts: _FontStack, max_width: float) -> str:
     #: Reshape and ellipsize before reordering into visual order - see CLAUDE.md.
-    return get_display(_ellipsize(arabic_reshaper.reshape(text), font, max_width))
-
-
-@functools.lru_cache(maxsize=None)
-def _cmap(path: Path) -> frozenset[int]:
-    kwargs = {"fontNumber": 0} if path.suffix.lower() == ".ttc" else {}
-    with TTFont(path, lazy=True, **kwargs) as face:
-        return frozenset(face.getBestCmap())
-
-
-def _load_fonts(names: list[str], size: float) -> list[tuple[ImageFont.FreeTypeFont, Path]]:
-    return [(ImageFont.truetype(_FONTS / name, size), _FONTS / name) for name in names]
-
-
-def _draw_with_fallback(draw, xy, text: str, font, font_path: Path,
-                         fallbacks: list[tuple[ImageFont.FreeTypeFont, Path]], fill) -> None:
-    """A run of characters `font` can't cover is drawn with the first font in `fallbacks` that
-    actually has the glyph, instead of the .notdef tofu box PIL would otherwise draw silently."""
-    x, y = xy
-    run, run_font = "", font
-
-    def flush():
-        if run:
-            draw.text((x, y), run, font=run_font, fill=fill, anchor="ls")
-
-    for ch in text:
-        chosen = font
-        if ord(ch) not in _cmap(font_path):
-            for fallback_font, fallback_path in fallbacks:
-                if ord(ch) in _cmap(fallback_path):
-                    chosen = fallback_font
-                    break
-        if chosen is not run_font:
-            flush()
-            x += run_font.getlength(run)
-            run = ""
-        run += ch
-        run_font = chosen
-    flush()
+    return get_display(_ellipsize(arabic_reshaper.reshape(text), fonts, max_width))
 
 
 def _format_clock(seconds: float) -> str:

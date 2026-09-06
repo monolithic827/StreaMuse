@@ -28,10 +28,8 @@ jobs:
         id: cache
         uses: actions/cache@v6
         with:
-          path: |
-            out/go-librespot.exe
-            out/*.dll
-          key: go-librespot-${{ env.LIBRESPOT_REF }}-${{ hashFiles('vendor/go-librespot/driver-pipe-windows.go') }}
+          path: out
+          key: go-librespot-out-${{ env.LIBRESPOT_REF }}-${{ hashFiles('vendor/go-librespot/driver-pipe-windows.go') }}
 
       - uses: actions/checkout@v7
         if: steps.cache.outputs.cache-hit != 'true'
@@ -148,8 +146,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # deps.GO_LIBRESPOT_LIBS_URL points at this asset - see CLAUDE.md's Spotify section.
-          $libs = uv run python -c "from streamuse.deps import GO_LIBRESPOT_LIBS; print(chr(10).join(GO_LIBRESPOT_LIBS))"
-          Compress-Archive -Path ($libs | ForEach-Object { "vendor/bin/$_" }) -DestinationPath go-librespot-libs.zip
-
+          # deps.GO_LIBRESPOT_LIBS_URL downloads this asset by name.
+          Compress-Archive -Path vendor/bin/*.dll -DestinationPath go-librespot-libs.zip
           gh release create $env:GITHUB_REF_NAME dist/StreaMuse.exe go-librespot-libs.zip --generate-notes

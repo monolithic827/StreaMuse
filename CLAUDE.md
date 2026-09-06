@@ -299,14 +299,20 @@ panel still receives the version as a number: nothing validates it there.
 - Pillow does no font substitution of its own - a codepoint missing from a font draws as that font's
   `.notdef` tofu box, silently. Segoe UI covers only a fraction of Unicode, so track metadata in
   Japanese, Ethiopic, Canadian Aboriginal Syllabics, Indic scripts, Thai/Lao, Tibetan, Yi or Phags-pa
-  drew as boxes. `frames._draw_with_fallback` checks real glyph coverage per character via
-  `fontTools`' cmap (`frames._cmap`, cached per font file) and routes each character through the
-  first font in `_FALLBACK_TITLE`/`_FALLBACK_BODY` that actually has it, so Latin text mixed into a
-  title keeps Segoe UI's weight instead of picking up a fallback font's. The fallback list is exactly
-  the specialty fonts (Yu Gothic, Ebrima, Gadugi, Nirmala UI, Leelawadee UI, Segoe UI Symbol,
-  Himalaya, Yi Baiti, PhagsPa) Windows itself ships and falls back to for the same reason - not a
-  bundled font, so it costs nothing to add another entry when a new script turns up broken. Only Yu
-  Gothic and Nirmala UI have a bold face; the rest are used at regular weight even in the title.
+  drew as boxes. `frames._FontStack` checks real glyph coverage per character via `fontTools`' cmap
+  and splits the string into runs, each drawn by the first font in `_TITLE_FONTS`/`_BODY_FONTS` that
+  has the character - so Latin mixed into a title keeps Segoe UI's weight rather than a fallback's.
+  **Measure through the same stack.** `_ellipsize` asks it for the width, because a character that
+  needs a fallback measures as Segoe UI's `.notdef` advance in the primary font - 420 px against
+  Yu Gothic's 640 px for twenty kana at 32 px - and a title trimmed on that number runs off the frame.
+- The fallback list is exactly the specialty fonts Windows itself ships and falls back to for the
+  same reason, so adding an entry when a new script turns up broken costs nothing. They are optional
+  Windows components, though, and absent on N/LTSC images or where a language feature was removed:
+  `_FontStack` skips a name whose file is missing rather than letting `ImageFont.truetype` raise,
+  which would take the whole video path down. Watch the file names - Nirmala UI ships only as the
+  collection `Nirmala.ttc`, whose face 1 is the bold, and there is no `NirmalaB.ttf`; hence the
+  `(name, index)` pairs. Only Yu Gothic and Nirmala UI have a bold face at all; the rest are used at
+  regular weight even in the title.
 
 ## Control panel (`wwwroot/`)
 
