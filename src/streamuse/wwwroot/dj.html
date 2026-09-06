@@ -78,6 +78,21 @@
       <div id="dj-queue" class="log-list" style="flex:1;min-height:60px"></div>
     </section>
 
+    <section class="card blueprint">
+      <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+      <h6 class="card-head">Learn (for Rave DJ mode)</h6>
+      <p class="micro">
+        Walks forward through what's already playing and learns each track - do this before starting
+        the stream, since skipping through is real playback.
+      </p>
+      <button class="btn btn-secondary btn-block" id="dj-learn-live">Learn from what's playing</button>
+      <div style="display:flex;gap:var(--space-2);margin-top:var(--space-2)">
+        <input class="input" id="dj-playlist-url" placeholder="YouTube Music playlist URL" style="flex:1">
+        <button class="btn btn-secondary" id="dj-learn-playlist" style="flex:none">Learn</button>
+      </div>
+      <p class="micro" id="dj-learn-hint"></p>
+    </section>
+
     <p class="micro" style="text-align:center;opacity:.6">
       Tracks and artwork via yt-dlp / music.youtube.com
     </p>

@@ -1,5 +1,6 @@
 """Loopback-only control surface. Never exposed through the tunnel."""
 
+import asyncio
 from dataclasses import asdict
 
 from aiohttp import web
@@ -135,6 +136,23 @@ def build_app(hub, deps, artwork, settings, pipeline, tunnel, sources, dj,
         dj.skip()
         return web.Response()
 
+    async def dj_harvest_live(_request):
+        asyncio.create_task(dj.harvest_live())
+        return web.Response()
+
+    async def dj_harvest_playlist(request):
+        try:
+            body = await request.json()
+        except ValueError:
+            raise web.HTTPBadRequest()
+
+        url = str(body.get("url", "") or "").strip()
+        if not url:
+            raise web.HTTPBadRequest()
+
+        asyncio.create_task(dj.harvest_playlist(url))
+        return web.Response()
+
     async def dj_art(_request):
         data = dj.artwork.bytes
         if not data:
@@ -155,6 +173,8 @@ def build_app(hub, deps, artwork, settings, pipeline, tunnel, sources, dj,
     app.router.add_post("/api/dj/request", dj_request)
     app.router.add_post("/api/dj/search", dj_search)
     app.router.add_post("/api/dj/skip", dj_skip)
+    app.router.add_post("/api/dj/harvest-live", dj_harvest_live)
+    app.router.add_post("/api/dj/harvest-playlist", dj_harvest_playlist)
     app.router.add_get("/api/dj/art", dj_art)
     app.router.add_get("/ws", websocket)
     app.router.add_get("/", index)

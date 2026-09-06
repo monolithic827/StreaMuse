@@ -13,6 +13,7 @@ import threading
 from . import paths, settings as settings_module, ui
 from .artwork import ArtworkStore
 from .deps import DependencyManager
+from .dj.library import TrackLibrary
 from .dj.mixer import DjMixer
 from .media import hls
 from .media.pipeline import StreamPipeline
@@ -71,7 +72,8 @@ def build(hub, settings, control_port: int, public_port: int):
         "spotify": SpotifyReceiver(settings, hub, artwork, deps),
         "device": DeviceReceiver(settings, hub),
     })
-    dj = DjMixer(settings, hub, deps, sources, SAMPLE_RATE)
+    library = TrackLibrary(settings, hub, deps, paths.DATA_DIR / "dj-library.json")
+    dj = DjMixer(settings, hub, deps, sources, library, SAMPLE_RATE)
     pipeline.set_dj(dj)
 
     control_app = control.build_app(

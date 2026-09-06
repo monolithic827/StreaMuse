@@ -271,6 +271,20 @@
 
         <hr class="hr">
 
+        <div class="field">
+          <label>DJ mode</label>
+          <div class="seg" style="width:100%">
+            <label class="seg-opt" style="flex:1;justify-content:center" data-mode-opt="radio">
+              <input type="radio" name="djmode" value="radio" data-dj-mode>Radio DJ
+            </label>
+            <label class="seg-opt" style="flex:1;justify-content:center" data-mode-opt="rave">
+              <input type="radio" name="djmode" value="rave" data-dj-mode>Rave DJ
+            </label>
+          </div>
+          <p class="micro">Rave DJ also picks its own next track from the learned library once
+            nothing's queued, instead of falling back to the captured app.</p>
+        </div>
+
         <div class="grid2">
           <div class="field">
             <label>DJ crossfade length - <span id="lbl-dj-crossfade">8s</span></label>
@@ -283,6 +297,14 @@
             <p class="micro">Picks at random from files dropped into the dj-sfx folder in StreaMuse's data
               directory.</p>
           </div>
+        </div>
+
+        <div class="field">
+          <label>Library learning speed - <span id="lbl-dj-concurrency">4</span> at once</label>
+          <input class="input range" type="range" id="set-dj-concurrency" min="1" max="12" step="1">
+          <p class="micro">How many tracks the library analyzes at once when learning a playlist.
+            Higher is faster but more likely to be rate-limited - back it off if learning starts
+            failing partway through.</p>
         </div>
 
         <hr class="hr">

@@ -261,6 +261,31 @@ document.getElementById('dj-skip').onclick = async () => {
   }
 };
 
+document.getElementById('dj-learn-live').onclick = async () => {
+  const hint = document.getElementById('dj-learn-hint');
+  hint.textContent = 'Learning from what\'s playing - this skips through tracks, watch the log…';
+  try {
+    await post('/api/dj/harvest-live');
+  } catch (error) {
+    hint.textContent = error.message;
+  }
+};
+
+document.getElementById('dj-learn-playlist').onclick = async () => {
+  const input = document.getElementById('dj-playlist-url');
+  const hint = document.getElementById('dj-learn-hint');
+  const url = input.value.trim();
+  if (!url) return;
+
+  hint.textContent = 'Reading the playlist - watch the log for progress…';
+  try {
+    await post('/api/dj/harvest-playlist', { url: url });
+    input.value = '';
+  } catch (error) {
+    hint.textContent = error.message;
+  }
+};
+
 darkQuery.addEventListener('change', () => { appliedTheme = ''; });
 
 setInterval(renderProgress, 250);

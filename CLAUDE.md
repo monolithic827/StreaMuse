@@ -250,6 +250,50 @@ panel still receives the version as a number: nothing validates it there.
   capture - consistent with existing behavior (`save_settings` only calls `sources.select()` when
   `settings.source` itself changes), not something new to solve here.
 
+**DJ mixer - Rave mode and the learned library (`dj/library.py`, `dj/harvester.py`, `dj/key.py`)**
+- Radio DJ (the default) only ever mixes in what's requested. Rave DJ additionally picks its own
+  next track from a learned library once nothing's queued, instead of falling back to the captured
+  app - but a real request queued after an autonomous pick still plays first (`PendingTrack.
+  autonomous`, checked in `_start_next`'s READY-entry search). The pick itself only ever happens from
+  `_evaluate_resume()`, the same place Radio DJ already decides whether to resume the captured app -
+  Rave mode's whole design is "resuming would end the set," not a separate code path bolted on.
+- The library needs no Apple Music API, no Spotify Web API, and no OAuth - both would have worked but
+  needed a paid Apple Developer account or an OAuth app respectively, and a much simpler path exists
+  by reusing capability that already ships here: `harvester.harvest_live_source` walks forward through
+  whatever's already playing by sending the existing "next" transport command and reading whatever
+  metadata arrives after it. Neither DACP nor go-librespot confirms a skip actually changed anything
+  - both are fire-and-forget HTTP acks - so this polls `receiver.track()` after each skip and diffs
+  against the previous title/artist, with a timeout standing in for "end of queue" (or a repeat-one
+  loop) since neither protocol says so directly. Stops on: the starting track reappearing (a full
+  loop), any track repeating, the timeout elapsing with no change, or a hard track-count ceiling.
+- This is real playback: every skip actually advances Apple Music/Spotify, and `push_audio` would
+  relay it to a running public stream. `push_audio` already drops everything while no stream session
+  exists, so harvesting before going live needs no new gating code - the DJ window's "Learn" button
+  just says to do it first, rather than this module enforcing it.
+- `harvester.harvest_youtube_playlist` reads a playlist URL directly with the same `--flat-playlist`
+  technique `fetch.py`'s search dropdown already uses - no API key, no OAuth, and unlike the live-
+  source harvest it hands back a `video_id` per track immediately, skipping the search-resolution step
+  live-harvested (title, artist) pairs need.
+- **Pre-analysis fetches a ~30 second clip (`YtDlpFetcher.fetch_clip`, `--download-sections`), never a
+  whole track.** Most candidates in a learned library never get played - fetching them in full to find
+  out their key/tempo would be bandwidth spent on tracks nothing ever hears. A full fetch only happens
+  if a track is actually picked, the same "fetch when needed" principle a real request already follows.
+- **Analysis concurrency is bounded and tunable (`djLibraryConcurrency`), never unbounded.** yt-dlp
+  downloading is already noted elsewhere in this file as ToS-adjacent; a hundred simultaneous requests
+  reads as automated abuse to YouTube's own side and risks the whole DJ feature getting rate-limited,
+  not just the library-building pass. `TrackLibrary.analyze_pending` bounds itself with an
+  `asyncio.Semaphore`, matching the async-native style `fetch.py` already uses rather than raw threads.
+- Key detection (`dj/key.py`) is a chroma profile against the standard Krumhansl-Schmuckler major/minor
+  templates, expressed as a Camelot wheel position - that notation is what actually determines mixing
+  compatibility (adjacent numbers, or the same number's other letter), not the raw key name. Verified
+  against synthetic chords (exact key recovered, correct relative-minor Camelot pairing) but not yet
+  against real, ambiguous material the way `beatgrid.py`'s own confidence threshold was calibrated
+  against real tracks - key detection genuinely can be wrong on atonal or percussion-heavy material,
+  and `pick_next` should be re-measured against real picks before trusting it blindly.
+- `TrackLibrary` is only ever touched from the asyncio loop (harvesting and analysis are both
+  loop-scheduled background tasks) - unlike `DjMixer` itself, nothing here runs on a receiver thread,
+  so it needs no `threading.Lock` the way `DjMixer`'s state does for `observe_live`.
+
 **Serialization and background tasks**
 - Never put a non-finite `float` into anything serialized. `state.dumps` passes `allow_nan=False`, so
   a mistake raises here instead of emitting JSON a browser silently rejects (see `LevelMeter.read`,
@@ -338,6 +382,19 @@ timing issues in the test harness itself (a near-silent, wrong-frequency capture
 resampler saw the audio), which point at the harness rather than `_Resampler` given the isolated test
 already confirmed it exactly preserves frequency, but this was not run to ground. Route a real app's
 output to a real device and listen to the resulting stream before trusting pitch on real content.
+
+**Rave DJ mode and the learned library** are verified piecewise against synthetic/mocked inputs, not
+yet against a real playing source. Confirmed: key detection recovers the exact key (and correct
+relative-major/minor Camelot pairing) on synthetic chords; `TrackLibrary.pick_next` correctly prefers
+an adjacent key and close tempo and correctly excludes recently-played tracks, verified against a
+small hand-built library; `harvester.harvest_live_source`'s polling/loop-detection logic (stop on the
+starting track reappearing, stop on any repeat, stop on a timeout with no change) all verified against
+a mocked receiver standing in for real DACP/go-librespot timing. **Not yet run against an actual
+playing Apple Music or Spotify session** - a live end-to-end test (advertise as a Spotify Connect
+device, have a phone actually connect and play a real playlist, harvest it for real) was set up but
+not completed. The mocked timing may not match how quickly real metadata actually arrives after a
+real "next" command; re-verify `skip_timeout`/`SKIP_POLL_INTERVAL` against real DACP/go-librespot
+before trusting the harvester's stop conditions on a real playlist.
 
 The pipeline, both web surfaces, the tunnel, the frozen exe and the panel have been verified by
 running them.

@@ -393,6 +393,7 @@ function fillSettings() {
   document.getElementById('set-autotunnel').checked = settings.autoTunnel;
   document.getElementById('set-dj-crossfade').value = settings.djCrossfadeSeconds;
   document.getElementById('set-dj-sfx').checked = settings.djSfxEnabled;
+  document.getElementById('set-dj-concurrency').value = settings.djLibraryConcurrency;
 
   const resolution = settings.width + 'x' + settings.height;
   for (const radio of document.querySelectorAll('input[name="res"]')) {
@@ -400,6 +401,9 @@ function fillSettings() {
   }
   for (const radio of document.querySelectorAll('input[name="tmode"]')) {
     radio.checked = radio.value === settings.tunnelMode;
+  }
+  for (const radio of document.querySelectorAll('[data-dj-mode]')) {
+    radio.checked = radio.value === settings.djMode;
   }
 
   document.getElementById('named-fields').hidden = settings.tunnelMode !== 'Named';
@@ -411,6 +415,7 @@ function syncSettingLabels() {
   document.getElementById('lbl-abr').textContent = document.getElementById('set-abr').value + ' kbps';
   document.getElementById('lbl-fps').textContent = document.getElementById('set-fps').value + ' fps';
   document.getElementById('lbl-dj-crossfade').textContent = document.getElementById('set-dj-crossfade').value + 's';
+  document.getElementById('lbl-dj-concurrency').textContent = document.getElementById('set-dj-concurrency').value;
 }
 
 function readSettings() {
@@ -432,7 +437,9 @@ function readSettings() {
     namedTunnelHostname: document.getElementById('set-host').value.trim(),
     autoTunnel: document.getElementById('set-autotunnel').checked,
     djCrossfadeSeconds: Number(document.getElementById('set-dj-crossfade').value),
-    djSfxEnabled: document.getElementById('set-dj-sfx').checked
+    djSfxEnabled: document.getElementById('set-dj-sfx').checked,
+    djMode: (document.querySelector('[data-dj-mode]:checked') || {}).value || 'radio',
+    djLibraryConcurrency: Number(document.getElementById('set-dj-concurrency').value)
   };
 }
 
@@ -466,7 +473,7 @@ document.getElementById('btn-deps').onclick = async () => {
   try { await post('/api/deps/refresh'); } catch { /* logged server-side */ }
 };
 
-for (const id of ['set-vbr', 'set-abr', 'set-fps', 'set-dj-crossfade']) {
+for (const id of ['set-vbr', 'set-abr', 'set-fps', 'set-dj-crossfade', 'set-dj-concurrency']) {
   document.getElementById(id).addEventListener('input', syncSettingLabels);
 }
 

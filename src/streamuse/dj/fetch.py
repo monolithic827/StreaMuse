@@ -128,6 +128,44 @@ class YtDlpFetcher:
         artwork = await self._fetch_thumbnail(thumbnail_url) if thumbnail_url else None
         return FetchedTrack(stereo, title, artist, album, artwork)
 
+    async def fetch_clip(self, video_id: str, seconds: int = 30) -> np.ndarray:
+        """A short clip from the start of a track, for pre-analysis only - the library's background
+        worker calls this on candidates that may never actually get played, so it deliberately never
+        pulls a whole track the way fetch() does. --download-sections needs ffmpeg on the download
+        path too, which is already a hard dependency here via _decode()."""
+        if self._deps.yt_dlp is None or self._deps.ffmpeg is None:
+            raise RuntimeError("yt-dlp or ffmpeg is not available - check the Dependencies panel")
+
+        workdir = Path(tempfile.gettempdir())
+        target = workdir / f"streamuse-dj-clip-{uuid.uuid4().hex}"
+
+        process = await asyncio.create_subprocess_exec(
+            self._deps.yt_dlp,
+            "-f", "bestaudio", "--no-playlist", "--playlist-items", "1",
+            "--download-sections", f"*0-{seconds}", "--force-keyframes-at-cuts",
+            "--quiet", "--no-warnings",
+            "-o", f"{target}.%(ext)s",
+            f"https://music.youtube.com/watch?v={video_id}",
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            creationflags=CREATE_NO_WINDOW,
+        )
+        jobs.adopt(process)
+
+        try:
+            _, err = await asyncio.wait_for(process.communicate(), FETCH_TIMEOUT)
+        except asyncio.TimeoutError:
+            process.kill()
+            raise RuntimeError("yt-dlp clip fetch timed out")
+
+        downloaded = next(iter(workdir.glob(f"{target.name}.*")), None)
+        if process.returncode != 0 or downloaded is None:
+            raise RuntimeError(f"yt-dlp clip fetch failed: {_tail(err)}")
+
+        try:
+            return await self._decode(downloaded)
+        finally:
+            downloaded.unlink(missing_ok=True)
+
     async def _decode(self, path: Path) -> np.ndarray:
         process = await asyncio.create_subprocess_exec(
             self._deps.ffmpeg, "-hide_banner", "-loglevel", "error",

@@ -7,6 +7,7 @@ decoding, beat analysis) happens ahead of time on background tasks.
 """
 
 import asyncio
+import collections
 import math
 import random
 import threading
@@ -15,7 +16,7 @@ import numpy as np
 
 from .. import state as state_module
 from ..artwork import ArtworkStore
-from . import beatgrid, pcm, transition
+from . import beatgrid, harvester, key, pcm, transition
 from .audition import audition
 from .deck import Deck
 from .fetch import SearchResult, YtDlpFetcher
@@ -49,9 +50,18 @@ SFX_COOLDOWN_TRANSITIONS = 2
 SFX_LATE_TOLERANCE_BEATS = 1.0
 SFX_FADE_SECONDS = 0.005
 
+#: Rave mode's energy target ramps from START to PEAK over this many autonomous picks, then holds -
+#: a set that opens at full intensity and never breathes reads as random, not as a set.
+ENERGY_RAMP_TRACKS = 6
+ENERGY_START = 0.35
+ENERGY_PEAK = 0.85
+
+#: How many of its own recent picks Rave mode won't repeat.
+RAVE_RECENT_HISTORY = 8
+
 
 class PendingTrack:
-    def __init__(self, entry_id: str, query: str) -> None:
+    def __init__(self, entry_id: str, query: str, autonomous: bool = False) -> None:
         self.id = entry_id
         self.query = query
         self.title = query
@@ -63,6 +73,11 @@ class PendingTrack:
         self.mix_in_offset = 0
         self.source_bpm = 0.0
         self.source_confidence = 0.0
+        #: A Rave-mode pick from the library rather than a real request - _start_next prefers any
+        #: non-autonomous READY entry ahead of these, so a real request always jumps the queue.
+        self.autonomous = autonomous
+        self.camelot = ""
+        self.video_id: str | None = None
 
     def to_entry(self) -> state_module.DjQueueEntry:
         return state_module.DjQueueEntry(self.id, self.query, self.title, self.artist, self.status)
@@ -75,15 +90,21 @@ class SfxVoice:
 
 
 class DjMixer:
-    def __init__(self, settings, hub, deps, sources, sample_rate: int = SAMPLE_RATE) -> None:
+    def __init__(self, settings, hub, deps, sources, library, sample_rate: int = SAMPLE_RATE) -> None:
         self._settings = settings
         self._hub = hub
         self._deps = deps
         self._sources = sources
+        self._library = library
         self._sample_rate = sample_rate
 
         self._fetcher = YtDlpFetcher(deps, hub)
         self._sfx = SfxLibrary(deps)
+
+        self._rave_recent: collections.deque = collections.deque(maxlen=RAVE_RECENT_HISTORY)
+        self._rave_pick_count = 0
+        self._last_finished_camelot = ""
+        self._last_finished_bpm = 0.0
 
         self._lock = threading.Lock()
         self._queue: list[PendingTrack] = []
@@ -129,13 +150,14 @@ class DjMixer:
 
     # ---- requests -----------------------------------------------------------
 
-    def request(self, query: str,
-               video_id: str | None = None) -> tuple[bool, str, state_module.DjQueueEntry | None]:
+    def request(self, query: str, video_id: str | None = None,
+               autonomous: bool = False) -> tuple[bool, str, state_module.DjQueueEntry | None]:
         query = query.strip()
         if not query:
             return False, "empty request", None
 
-        entry = PendingTrack(_new_id(), query)
+        entry = PendingTrack(_new_id(), query, autonomous)
+        entry.video_id = video_id
         with self._lock:
             self._queue.append(entry)
         self._publish()
@@ -148,6 +170,31 @@ class DjMixer:
         its video_id skips the search fetch() would otherwise redo, and fetches that exact track."""
         query = query.strip()
         return await self._fetcher.search(query) if query else []
+
+    # ---- the Rave-mode library ----------------------------------------------------
+
+    async def harvest_live(self) -> None:
+        """Walks forward through whatever's already playing on the selected source and learns each
+        track - see harvester.py for why this needs no playlist API. Best run before the stream goes
+        live: it's real playback, which push_audio only drops while no stream session exists. Runs as
+        a detached background task from the web handler, so it must log its own exceptions."""
+        try:
+            candidates = await harvester.harvest_live_source(self._sources, self._hub, self._fetcher)
+            added = self._library.add_candidates(candidates, "harvested")
+            self._hub.info(f"dj library: {added} new tracks queued for analysis")
+            await self._library.analyze_pending()
+        except Exception as exc:
+            self._hub.error(f"dj library: learning from the live source failed: {exc}")
+
+    async def harvest_playlist(self, url: str) -> None:
+        """Same background-task exception discipline as harvest_live."""
+        try:
+            candidates = await harvester.harvest_youtube_playlist(self._deps, self._hub, url)
+            added = self._library.add_candidates(candidates, "playlist")
+            self._hub.info(f"dj library: {added} new tracks queued for analysis")
+            await self._library.analyze_pending()
+        except Exception as exc:
+            self._hub.error(f"dj library: learning that playlist failed: {exc}")
 
     def skip(self) -> None:
         """Moves straight to whatever is next: if something is queued and ready it mixes in now,
@@ -188,12 +235,13 @@ class DjMixer:
                 return
 
             trimmed = fetched.stereo[result.start_frame:] if result.start_frame > 0 else fetched.stereo
-            grid = self._read_grid(trimmed)
+            grid, camelot = self._read_grid(trimmed)
 
             entry.pcm = trimmed
             entry.mix_in_offset = grid.mix_in_frame if grid else 0
             entry.source_bpm = grid.bpm if grid else 0.0
             entry.source_confidence = grid.confidence if grid else 0.0
+            entry.camelot = camelot
 
             skipped = result.start_frame / self._sample_rate
             mix_in_seconds = entry.mix_in_offset / self._sample_rate
@@ -219,12 +267,14 @@ class DjMixer:
             self._publish()
             self._evaluate_resume()
 
-    def _read_grid(self, pcm_data: np.ndarray) -> beatgrid.BeatGrid | None:
-        """Reads the grid from the opening of the track rather than the whole file - averaged over a
-        full track, beat-strength confidence is diluted by intros, breakdowns and outros, and the
-        opening is also the part whose phase we actually enter on."""
+    def _read_grid(self, pcm_data: np.ndarray) -> tuple[beatgrid.BeatGrid | None, str]:
+        """Reads the grid (and, for Rave mode's harmonic picking, the key) from the opening of the
+        track rather than the whole file - averaged over a full track, beat-strength confidence is
+        diluted by intros, breakdowns and outros, and the opening is also the part whose phase we
+        actually enter on."""
         window = pcm_data[: int(GRID_WINDOW_SECONDS * self._sample_rate)]
-        return beatgrid.analyze(pcm.to_mono(window), self._sample_rate)
+        mono = pcm.to_mono(window)
+        return beatgrid.analyze(mono, self._sample_rate), key.detect(mono, self._sample_rate)
 
     # ---- handover scheduling ---------------------------------------------------
 
@@ -239,7 +289,10 @@ class DjMixer:
             if self._incoming is not None and not handover:
                 return False
 
-            next_entry = next((e for e in self._queue if e.status == READY), None)
+            ready = [e for e in self._queue if e.status == READY]
+            # A real request always plays before an autonomous Rave-mode pick, even one queued
+            # earlier - the pick is there to fill silence, not to make someone wait behind it.
+            next_entry = next((e for e in ready if not e.autonomous), None) or next(iter(ready), None)
             if next_entry is None or next_entry.pcm is None or next_entry.pcm.shape[0] == 0:
                 return False
 
@@ -516,6 +569,10 @@ class DjMixer:
                 self._incoming = None
                 retired = True
                 completed = True
+                self._last_finished_camelot = incoming.entry.camelot
+                self._last_finished_bpm = incoming.entry.source_bpm
+                if incoming.entry.video_id:
+                    self._rave_recent.append(incoming.entry.video_id)
 
         if not retired:
             return
@@ -534,7 +591,9 @@ class DjMixer:
     def _evaluate_resume(self) -> None:
         """Resumes the captured app as soon as nothing is left to hand off to - eagerly, since
         resuming early costs nothing (live audio the envelope does not want yet is simply multiplied
-        by zero) where resuming late means dead air right when the outro needs it."""
+        by zero) where resuming late means dead air right when the outro needs it. In Rave mode,
+        "nothing left to hand off to" is instead the cue to pick its own next track - resuming the
+        captured app would end the set, which is the opposite of what Rave mode is for."""
         with self._lock:
             incoming_entry = self._incoming.entry if self._incoming else None
             outgoing_entry = self._outgoing.entry if self._outgoing else None
@@ -542,8 +601,32 @@ class DjMixer:
                 e is not incoming_entry and e is not outgoing_entry and e.status not in _TERMINAL
                 for e in self._queue)
 
-        if not has_successor:
-            self._maybe_resume_source()
+        if has_successor:
+            return
+
+        if self._settings.djMode == "rave" and self._autopick_next():
+            return
+
+        self._maybe_resume_source()
+
+    def _autopick_next(self) -> bool:
+        """Queues the library's own choice for what plays next. A real request queued after this
+        still plays first (see _start_next's non-autonomous preference) - this only fills silence
+        that would otherwise fall back to the captured app. Returns False when the library has
+        nothing pickable yet, so the caller can fall back to resuming the live source instead."""
+        target_energy = ENERGY_START + (ENERGY_PEAK - ENERGY_START) * min(
+            1.0, self._rave_pick_count / ENERGY_RAMP_TRACKS)
+
+        pick = self._library.pick_next(
+            self._last_finished_camelot, self._last_finished_bpm, self._rave_recent, target_energy)
+        if pick is None:
+            return False
+
+        title = f"{pick.artist} - {pick.title}".strip(" -") or pick.title
+        accepted, _, _ = self.request(title, video_id=pick.video_id, autonomous=True)
+        if accepted:
+            self._rave_pick_count += 1
+        return accepted
 
     # ---- pause/resume of the live source ---------------------------------------
 
