@@ -22,6 +22,7 @@ from .. import jobs
 
 CREATE_NO_WINDOW = 0x08000000
 FETCH_TIMEOUT = 180
+SEARCH_RESULTS = 6
 SAMPLE_RATE = 44100
 
 #: Unlikely enough in a title to split fields on.
@@ -38,17 +39,60 @@ class FetchedTrack:
         self.artwork = artwork
 
 
+class SearchResult:
+    def __init__(self, video_id: str, title: str, artist: str, thumbnail: str) -> None:
+        self.video_id = video_id
+        self.title = title
+        self.artist = artist
+        self.thumbnail = thumbnail
+
+
 class YtDlpFetcher:
     def __init__(self, deps, hub) -> None:
         self._deps = deps
         self._hub = hub
 
-    async def fetch(self, query: str) -> FetchedTrack:
+    async def search(self, query: str) -> list[SearchResult]:
+        """Lists the top candidates for a query without downloading anything - --flat-playlist skips
+        the per-entry lookup --print would otherwise trigger, which is what keeps this fast enough
+        to run while someone's still typing."""
+        if self._deps.yt_dlp is None:
+            raise RuntimeError("yt-dlp is not available - check the Dependencies panel")
+
+        process = await asyncio.create_subprocess_exec(
+            self._deps.yt_dlp,
+            "--flat-playlist", "--quiet", "--no-warnings",
+            "--playlist-items", f"1-{SEARCH_RESULTS}",
+            "--print", SEPARATOR.join((
+                "%(id)s", "%(track,title)s", "%(artist,uploader,channel)s", "%(thumbnail)s")),
+            "https://music.youtube.com/search?q=" + urllib.parse.quote(query),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            creationflags=CREATE_NO_WINDOW,
+        )
+        jobs.adopt(process)
+
+        try:
+            out, err = await asyncio.wait_for(process.communicate(), FETCH_TIMEOUT)
+        except asyncio.TimeoutError:
+            process.kill()
+            raise RuntimeError("yt-dlp search timed out")
+
+        if process.returncode != 0:
+            raise RuntimeError(f"yt-dlp search failed: {_tail(err)}")
+
+        return _parse_search_lines(out)
+
+    async def fetch(self, query: str, video_id: str | None = None) -> FetchedTrack:
         if self._deps.yt_dlp is None or self._deps.ffmpeg is None:
             raise RuntimeError("yt-dlp or ffmpeg is not available - check the Dependencies panel")
 
         workdir = Path(tempfile.gettempdir())
         target = workdir / f"streamuse-dj-{uuid.uuid4().hex}"
+
+        # A video_id from search() names the exact track picked from the dropdown; without one this
+        # falls back to the same first-result search fetch() always did.
+        source = (f"https://music.youtube.com/watch?v={video_id}" if video_id else
+                 "https://music.youtube.com/search?q=" + urllib.parse.quote(query))
 
         process = await asyncio.create_subprocess_exec(
             self._deps.yt_dlp,
@@ -58,7 +102,7 @@ class YtDlpFetcher:
             "-o", f"{target}.%(ext)s",
             "--print", SEPARATOR.join((
                 "%(track,title)s", "%(artist,uploader)s", "%(album)s", "%(thumbnail)s")),
-            "https://music.youtube.com/search?q=" + urllib.parse.quote(query),
+            source,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             creationflags=CREATE_NO_WINDOW,
         )
@@ -127,6 +171,25 @@ def _parse_print_line(out: bytes, fallback_title: str) -> tuple[str, str, str, s
         return None if not value or value == "NA" else value
 
     return (clean(0) or fallback_title, clean(1) or "", clean(2) or "", clean(3))
+
+
+def _parse_search_lines(out: bytes) -> list[SearchResult]:
+    results = []
+    for line in out.decode("utf-8", "replace").splitlines():
+        fields = line.split(SEPARATOR)
+        if len(fields) != 4:
+            continue
+
+        def clean(index: int) -> str:
+            value = fields[index].strip()
+            return "" if value == "NA" else value
+
+        video_id = clean(0)
+        if not video_id:
+            continue
+        results.append(SearchResult(video_id, clean(1) or "Unknown title", clean(2), clean(3)))
+
+    return results
 
 
 def _tail(stream: bytes, limit: int = 300) -> str:

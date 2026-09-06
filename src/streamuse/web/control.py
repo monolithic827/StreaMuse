@@ -100,12 +100,32 @@ def build_app(hub, deps, artwork, settings, pipeline, tunnel, sources, dj,
         if not query:
             raise web.HTTPBadRequest()
 
-        accepted, error, entry = dj.request(query)
+        video_id = str(body.get("videoId") or "").strip() or None
+
+        accepted, error, entry = dj.request(query, video_id)
         if not accepted:
             raise web.HTTPBadRequest(
                 text=dumps({"detail": error or "could not queue that request"}),
                 content_type="application/json")
         return _json(asdict(entry))
+
+    async def dj_search(request):
+        try:
+            body = await request.json()
+        except ValueError:
+            raise web.HTTPBadRequest()
+
+        query = str(body.get("query", "") or "").strip()
+        if not query:
+            return _json([])
+
+        try:
+            results = await dj.search(query)
+        except Exception as exc:
+            raise web.HTTPInternalServerError(text=str(exc))
+
+        return _json([{"videoId": r.video_id, "title": r.title, "artist": r.artist,
+                       "thumbnail": r.thumbnail} for r in results])
 
     async def dj_skip(_request):
         dj.skip()
@@ -128,6 +148,7 @@ def build_app(hub, deps, artwork, settings, pipeline, tunnel, sources, dj,
     app.router.add_post("/api/deps/refresh", deps_refresh)
     app.router.add_post("/api/player/{command}", player)
     app.router.add_post("/api/dj/request", dj_request)
+    app.router.add_post("/api/dj/search", dj_search)
     app.router.add_post("/api/dj/skip", dj_skip)
     app.router.add_get("/api/dj/art", dj_art)
     app.router.add_get("/ws", websocket)

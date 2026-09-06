@@ -490,6 +490,50 @@ body.log-closed .health-panel {
   word-break: break-word;
 }
 
+.dj-results {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.dj-result {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-1) var(--space-2);
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dj-result:hover {
+  background: color-mix(in srgb, var(--color-text) 8%, transparent);
+}
+
+.dj-result img {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-md);
+  object-fit: cover;
+  background: color-mix(in srgb, var(--color-text) 10%, transparent);
+}
+
+.dj-result-text {
+  min-width: 0;
+}
+
+.dj-result-artist {
+  color: color-mix(in srgb, var(--color-text) 55%, transparent);
+}
+
 /* - settings - */
 .dialog-backdrop[hidden] {
   display: none;

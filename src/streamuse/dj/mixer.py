@@ -18,7 +18,7 @@ from ..artwork import ArtworkStore
 from . import beatgrid, pcm, transition
 from .audition import audition
 from .deck import Deck
-from .fetch import YtDlpFetcher
+from .fetch import SearchResult, YtDlpFetcher
 from .sfx import SfxLibrary
 
 FETCHING, AUDITIONING, READY, MIXING, MIXING_OUT, DONE, FAILED, REJECTED = (
@@ -60,7 +60,6 @@ class PendingTrack:
         self.status = FETCHING
         self.pcm: np.ndarray | None = None
         self.artwork: bytes | None = None
-        self.artwork_version = 0
         self.mix_in_offset = 0
         self.source_bpm = 0.0
         self.source_confidence = 0.0
@@ -130,7 +129,8 @@ class DjMixer:
 
     # ---- requests -----------------------------------------------------------
 
-    def request(self, query: str) -> tuple[bool, str, state_module.DjQueueEntry | None]:
+    def request(self, query: str,
+               video_id: str | None = None) -> tuple[bool, str, state_module.DjQueueEntry | None]:
         query = query.strip()
         if not query:
             return False, "empty request", None
@@ -140,8 +140,14 @@ class DjMixer:
             self._queue.append(entry)
         self._publish()
 
-        asyncio.create_task(self._fetch(entry))
+        asyncio.create_task(self._fetch(entry, video_id))
         return True, "", entry.to_entry()
+
+    async def search(self, query: str) -> list[SearchResult]:
+        """Candidates for a query, for a request dropdown - picking one and calling request() with
+        its video_id skips the search fetch() would otherwise redo, and fetches that exact track."""
+        query = query.strip()
+        return await self._fetcher.search(query) if query else []
 
     def skip(self) -> None:
         """Moves straight to whatever is next: if something is queued and ready it mixes in now,
@@ -163,13 +169,12 @@ class DjMixer:
 
     # ---- fetch pipeline -------------------------------------------------------
 
-    async def _fetch(self, entry: PendingTrack) -> None:
+    async def _fetch(self, entry: PendingTrack, video_id: str | None = None) -> None:
         try:
-            fetched = await self._fetcher.fetch(entry.query)
+            fetched = await self._fetcher.fetch(entry.query, video_id)
 
             entry.title, entry.artist, entry.album = fetched.title, fetched.artist, fetched.album
             entry.artwork = fetched.artwork
-            entry.artwork_version = _version_of(fetched.artwork)
 
             entry.status = AUDITIONING
             self._publish()
@@ -299,6 +304,7 @@ class DjMixer:
 
             next_entry.status = MIXING
             self._incoming = Deck(next_entry, next_entry.pcm, self._sample_rate, cursor)
+            self.artwork.set(next_entry.artwork)
 
         self._hub.info(f"dj: {message}")
         self._publish()
@@ -633,7 +639,7 @@ class DjMixer:
             per_second = float(self._sample_rate)
             position = deck.cursor / per_second if deck is not None else 0.0
             duration = deck.pcm.shape[0] / per_second if deck is not None else 0.0
-            artwork_version = playing.artwork_version if playing is not None else 0
+            artwork_version = self.artwork.version if playing is not None else 0
             album = playing.album if playing is not None else ""
             now_mixing = playing.to_entry() if playing is not None else None
             phase_text = self._phase_text()
@@ -665,17 +671,6 @@ class DjMixer:
 
     def _publish(self) -> None:
         self._hub.set_dj(self.snapshot())
-
-
-def _version_of(artwork: bytes | None) -> int:
-    """Content hash, forced odd so it is never 0 - the panel reads 0 as "no artwork"."""
-    if not artwork:
-        return 0
-    digest = 1469598103934665603
-    for byte in artwork:
-        digest ^= byte
-        digest = (digest * 1099511628211) & 0xFFFFFFFFFFFFFFFF
-    return (digest & 0x7FFFFFFFFFFFFFFE) | 1
 
 
 def _new_id() -> str:

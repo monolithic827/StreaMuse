@@ -62,7 +62,7 @@ def run(url: str, dj_url: str, settings) -> None:
     # main window's own close ends the app and tears everything down for real.
     dj_window.events.closing += _hide_instead_of_close(dj_window)
 
-    webview.create_window(
+    main_window = webview.create_window(
         "StreaMuse",
         url,
         width=WIDTH,
@@ -71,7 +71,27 @@ def run(url: str, dj_url: str, settings) -> None:
         background_color=ground_color,
         js_api=_MainWindowApi(dj_window),
     )
+
+    # Docked to the main window's right edge rather than a free-floating window: matches its height
+    # and rides along on every move or resize. moved/resized/shown all run this on their own thread
+    # (webview.Event.set spawns one per firing), and move()/resize() reach the native window via
+    # SetWindowPos, which - unlike most WinForms calls - is safe to invoke off the UI thread.
+    dock = _dock_dj_window(main_window, dj_window)
+    main_window.events.shown += dock
+    main_window.events.moved += dock
+    main_window.events.resized += dock
+
     webview.start(private_mode=False, storage_path=str(paths.WEBVIEW_DIR))
+
+
+def _dock_dj_window(main_window, dj_window):
+    """Matches height to the main window and sits immediately right of it - accepts *_args so the
+    same handler works for shown() (no args), moved(x, y) and resized(width, height) alike."""
+    def reposition(*_args) -> None:
+        dj_window.resize(dj_window.width, main_window.height)
+        dj_window.move(main_window.x + main_window.width, main_window.y)
+
+    return reposition
 
 
 def _hide_instead_of_close(window):

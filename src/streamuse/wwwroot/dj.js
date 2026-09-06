@@ -171,25 +171,87 @@ document.getElementById('tb-close').onclick = () => {
   }
 };
 
-document.getElementById('dj-request').onclick = async () => {
+async function requestTrack(query, videoId) {
+  const hint = document.getElementById('dj-hint');
+  hideResults();
+
+  hint.textContent = 'Fetching "' + query + '"…';
+  try {
+    await post('/api/dj/request', { query: query, videoId: videoId || undefined });
+    document.getElementById('dj-query').value = '';
+  } catch (error) {
+    hint.textContent = error.message;
+  }
+}
+
+function hideResults() {
+  const results = document.getElementById('dj-results');
+  results.hidden = true;
+  results.replaceChildren();
+}
+
+function renderResults(candidates) {
+  const results = document.getElementById('dj-results');
+
+  if (!candidates.length) {
+    const empty = document.createElement('p');
+    empty.className = 'micro';
+    empty.textContent = 'No matches.';
+    results.replaceChildren(empty);
+    results.hidden = false;
+    return;
+  }
+
+  results.replaceChildren(...candidates.map(candidate => {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'dj-result';
+
+    const art = document.createElement('img');
+    art.alt = '';
+    if (candidate.thumbnail) art.src = candidate.thumbnail;
+
+    const text = document.createElement('div');
+    text.className = 'dj-result-text';
+
+    const title = document.createElement('div');
+    title.className = 'ellipsis';
+    title.textContent = candidate.title;
+
+    const artist = document.createElement('div');
+    artist.className = 'micro dj-result-artist ellipsis';
+    artist.textContent = candidate.artist;
+
+    text.append(title, artist);
+    row.append(art, text);
+    row.onclick = () => requestTrack(candidate.title, candidate.videoId);
+    return row;
+  }));
+  results.hidden = false;
+}
+
+document.getElementById('dj-search').onclick = async () => {
   const input = document.getElementById('dj-query');
   const hint = document.getElementById('dj-hint');
   const query = input.value.trim();
   if (!query) return;
 
-  hint.textContent = 'Fetching "' + query + '"…';
-
+  hint.textContent = 'Searching…';
   try {
-    await post('/api/dj/request', { query: query });
-    input.value = '';
+    const response = await post('/api/dj/search', { query: query });
+    renderResults(await response.json());
+    hint.textContent = 'Pick a result to fetch, audition and mix it in.';
   } catch (error) {
+    hideResults();
     hint.textContent = error.message;
   }
 };
 
 document.getElementById('dj-query').addEventListener('keydown', event => {
-  if (event.key === 'Enter') document.getElementById('dj-request').click();
+  if (event.key === 'Enter') document.getElementById('dj-search').click();
 });
+
+document.getElementById('dj-query').addEventListener('input', hideResults);
 
 document.getElementById('dj-skip').onclick = async () => {
   try {

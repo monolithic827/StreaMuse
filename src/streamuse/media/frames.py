@@ -145,13 +145,18 @@ class CoverFrameRenderer:
             label = "REQUESTED"
             pad_x, pad_y = width * 0.012, height * 0.006
             pill_height = self._small_font.size + pad_y * 2
-            pill_top = y - pill_height - height * 0.02
+            pill_top = self._art_box[1] + height * 0.02
             pill_width = self._small_font.getlength(label) + pad_x * 2
             draw.rounded_rectangle(
                 (left, pill_top, left + pill_width, pill_top + pill_height),
                 radius=pill_height * 0.3, fill=REQUESTED_PILL)
             draw.text((left + pad_x, pill_top + pad_y), label,
                       font=self._small_font, fill=REQUESTED_TEXT, anchor="la")
+
+            # Pushed down by the title font's own ascent (not a guessed constant) so its cap-height
+            # clears the pill above it - at the unmodified y they visibly overlapped.
+            ascent, _ = self._title_font.getmetrics()
+            y = max(y, pill_top + pill_height + ascent + height * 0.015)
 
         title = now.title or "Nothing playing"
         draw.text((left, y), _ellipsize(title, self._title_font, available),
