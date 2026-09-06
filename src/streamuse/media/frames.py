@@ -26,10 +26,6 @@ TRACK = (0xFF, 0xFF, 0xFF, 0x33)
 
 _FONTS = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
 
-#: Segoe UI covers only a fraction of Unicode, so a character outside it draws as .notdef tofu with
-#: no error. These are the specialty fonts Windows itself ships and falls back to for exactly this -
-#: one bundle per group of scripts Segoe UI doesn't carry. Bold variants exist for a couple of them;
-#: the rest have no bold face, so the regular weight is used at every size.
 _FALLBACK_TITLE = ["YuGothB.ttc", "ebrima.ttf", "gadugi.ttf", "NirmalaB.ttf", "leelawui.ttf",
                    "seguisym.ttf", "himalaya.ttf", "msyi.ttf", "phagspa.ttf"]
 _FALLBACK_BODY = ["YuGothR.ttc", "ebrima.ttf", "gadugi.ttf", "Nirmala.ttf", "leelawui.ttf",

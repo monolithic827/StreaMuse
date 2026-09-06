@@ -305,7 +305,8 @@ panel still receives the version as a number: nothing validates it there.
   title keeps Segoe UI's weight instead of picking up a fallback font's. The fallback list is exactly
   the specialty fonts (Yu Gothic, Ebrima, Gadugi, Nirmala UI, Leelawadee UI, Segoe UI Symbol,
   Himalaya, Yi Baiti, PhagsPa) Windows itself ships and falls back to for the same reason - not a
-  bundled font, so it costs nothing to add another entry when a new script turns up broken.
+  bundled font, so it costs nothing to add another entry when a new script turns up broken. Only Yu
+  Gothic and Nirmala UI have a bold face; the rest are used at regular weight even in the title.
 
 ## Control panel (`wwwroot/`)
 
