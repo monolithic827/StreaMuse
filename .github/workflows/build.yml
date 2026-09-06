@@ -28,8 +28,8 @@ jobs:
         id: cache
         uses: actions/cache@v6
         with:
-          path: out/go-librespot.exe
-          key: go-librespot-${{ env.LIBRESPOT_REF }}-${{ hashFiles('vendor/go-librespot/driver-pipe-windows.go') }}
+          path: out
+          key: go-librespot-out-${{ env.LIBRESPOT_REF }}-${{ hashFiles('vendor/go-librespot/driver-pipe-windows.go', '.github/workflows/build.yml') }}
 
       - uses: actions/checkout@v7
         if: steps.cache.outputs.cache-hit != 'true'
@@ -86,10 +86,13 @@ jobs:
           cd go-librespot
           go build -o ../out/go-librespot.exe -ldflags "-s -w" ./cmd/daemon
 
+          # CGO_ENABLED links these dynamically - see CLAUDE.md's Spotify section.
+          cp /mingw64/bin/{libmpg123-0,libFLAC,libvorbisenc-2,libvorbis-0,libogg-0,libwinpthread-1}.dll ../out/
+
       - uses: actions/upload-artifact@v7
         with:
           name: go-librespot
-          path: out/go-librespot.exe
+          path: out/*
 
   build:
     needs: librespot
@@ -124,7 +127,8 @@ jobs:
 
       - name: Check what will be shipped
         run: |
-          $wanted = 'ffmpeg.exe', 'cloudflared.exe', 'go-librespot.exe'
+          $libs = uv run python -c "from streamuse.deps import GO_LIBRESPOT_LIBS; print(chr(10).join(GO_LIBRESPOT_LIBS))"
+          $wanted = @('ffmpeg.exe', 'cloudflared.exe', 'go-librespot.exe') + $libs
           $missing = $wanted | Where-Object { -not (Test-Path "vendor/bin/$_") }
           if ($missing) { throw "not staged: $missing" }
           Get-ChildItem vendor/bin | Format-Table Name, Length
@@ -141,4 +145,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create $env:GITHUB_REF_NAME dist/StreaMuse.exe --generate-notes
+        run: |
+          # deps.GO_LIBRESPOT_LIBS_URL downloads this asset by name.
+          Compress-Archive -Path vendor/bin/*.dll -DestinationPath go-librespot-libs.zip
+          gh release create $env:GITHUB_REF_NAME dist/StreaMuse.exe go-librespot-libs.zip --generate-notes

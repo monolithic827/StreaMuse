@@ -55,7 +55,7 @@ class SpotifyReceiver(Receiver):
     @property
     def status_text(self) -> str:
         if not self._process.running:
-            return "Spotify receiver stopped"
+            return "Spotify Connect isn't running - go-librespot exited"
         if not self._active:
             return f"Spotify device '{self._name}' - pick it in Spotify"
         return f"Spotify connected as {self._username}" if self._username else "Spotify connected"

@@ -1,10 +1,14 @@
 """Draws the video track as JPEG frames pushed down a socket, so the picture can change mid-stream
 without restarting ffmpeg and breaking the playlist."""
 
+import functools
 import io
 import os
 from pathlib import Path
 
+import arabic_reshaper
+from bidi import get_display
+from fontTools.ttLib import TTFont
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from ..state import NowPlaying
@@ -27,6 +31,12 @@ TRACK = (0xFF, 0xFF, 0xFF, 0x33)
 
 _FONTS = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
 
+_SPECIALTY = [("ebrima.ttf", 0), ("gadugi.ttf", 0), ("LeelawUI.ttf", 0), ("seguisym.ttf", 0),
+              ("himalaya.ttf", 0), ("msyi.ttf", 0), ("phagspa.ttf", 0)]
+
+_TITLE_FONTS = [("seguisb.ttf", 0), ("YuGothB.ttc", 0), ("Nirmala.ttc", 1), *_SPECIALTY]
+_BODY_FONTS = [("segoeui.ttf", 0), ("YuGothR.ttc", 0), ("Nirmala.ttc", 0), *_SPECIALTY]
+
 
 class CoverFrameRenderer:
     def __init__(self, settings, artwork, hub, dj) -> None:
@@ -38,9 +48,9 @@ class CoverFrameRenderer:
         self._height = settings.height
         self._overlay = settings.textOverlay
 
-        self._title_font = ImageFont.truetype(_FONTS / "seguisb.ttf", self._height * 0.075)
-        self._body_font = ImageFont.truetype(_FONTS / "segoeui.ttf", self._height * 0.045)
-        self._small_font = ImageFont.truetype(_FONTS / "segoeui.ttf", self._height * 0.033)
+        self._title = _FontStack(_TITLE_FONTS, self._height * 0.075)
+        self._body = _FontStack(_BODY_FONTS, self._height * 0.045)
+        self._small = _FontStack(_BODY_FONTS, self._height * 0.033)
 
         self._art_box = _square_in(self._width, self._height,
                                    0.62 if self._overlay else 0.86, align_left=self._overlay)
@@ -144,31 +154,27 @@ class CoverFrameRenderer:
             # Dropped-in audio otherwise looks identical to normal playback in the frame.
             label = "REQUESTED"
             pad_x, pad_y = width * 0.012, height * 0.006
-            pill_height = self._small_font.size + pad_y * 2
+            pill_height = self._small.size + pad_y * 2
             pill_top = self._art_box[1] + height * 0.02
-            pill_width = self._small_font.getlength(label) + pad_x * 2
+            pill_width = self._small.width(label) + pad_x * 2
             draw.rounded_rectangle(
                 (left, pill_top, left + pill_width, pill_top + pill_height),
                 radius=pill_height * 0.3, fill=REQUESTED_PILL)
-            draw.text((left + pad_x, pill_top + pad_y), label,
-                      font=self._small_font, fill=REQUESTED_TEXT, anchor="la")
+            self._small.draw(draw, (left + pad_x, pill_top + pad_y), label, REQUESTED_TEXT,
+                             anchor="la")
 
             # Pushed down by the title font's own ascent (not a guessed constant) so its cap-height
             # clears the pill above it - at the unmodified y they visibly overlapped.
-            ascent, _ = self._title_font.getmetrics()
-            y = max(y, pill_top + pill_height + ascent + height * 0.015)
+            y = max(y, pill_top + pill_height + self._title.ascent + height * 0.015)
 
         title = now.title or "Nothing playing"
-        draw.text((left, y), _ellipsize(title, self._title_font, available),
-                  font=self._title_font, fill=BRIGHT, anchor="ls")
+        self._title.draw(draw, (left, y), _rtl(title, self._title, available), BRIGHT)
         y += height * 0.085
 
-        draw.text((left, y), _ellipsize(now.artist, self._body_font, available),
-                  font=self._body_font, fill=MUTED, anchor="ls")
+        self._body.draw(draw, (left, y), _rtl(now.artist, self._body, available), MUTED)
         y += height * 0.06
 
-        draw.text((left, y), _ellipsize(now.album, self._small_font, available),
-                  font=self._small_font, fill=FAINT, anchor="ls")
+        self._small.draw(draw, (left, y), _rtl(now.album, self._small, available), FAINT)
 
         bar_y = self._art_box[3] - height * 0.06
         bar_height = max(2.0, height * 0.006)
@@ -182,9 +188,8 @@ class CoverFrameRenderer:
         total = _format_clock(now.durationSeconds) if now.durationSeconds > 0 else "--:--"
         times_y = bar_y + height * 0.045
 
-        draw.text((left, times_y), elapsed, font=self._small_font, fill=FAINT, anchor="ls")
-        draw.text((right - self._small_font.getlength(total), times_y), total,
-                  font=self._small_font, fill=FAINT, anchor="ls")
+        self._small.draw(draw, (left, times_y), elapsed, FAINT)
+        self._small.draw(draw, (right - self._small.width(total), times_y), total, FAINT)
 
         frame.paste(layer, (0, 0), layer)
 
@@ -240,15 +245,61 @@ def _fit_origin(art: Image.Image, box) -> tuple[int, int]:
             round((box[1] + box[3]) / 2 - art.height * scale / 2))
 
 
-def _ellipsize(text: str, font, max_width: float) -> str:
-    if not text or font.getlength(text) <= max_width:
+class _FontStack:
+    """The first font that has a glyph for a character is the one that draws it, since Pillow
+    substitutes nothing of its own - see CLAUDE.md."""
+
+    def __init__(self, specs, size: float) -> None:
+        self.size = size
+        self._fonts = [(ImageFont.truetype(path, size, index=index), _cmap(path, index))
+                       for name, index in specs if (path := _FONTS / name).is_file()]
+
+    @property
+    def ascent(self) -> float:
+        """The primary font's, which is what text is laid out against even when a run falls back."""
+        return self._fonts[0][0].getmetrics()[0]
+
+    def width(self, text: str) -> float:
+        return sum(font.getlength(run) for font, run in self._runs(text))
+
+    def draw(self, draw, xy, text: str, fill, anchor: str = "ls") -> None:
+        x, y = xy
+        for font, run in self._runs(text):
+            draw.text((x, y), run, font=font, fill=fill, anchor=anchor)
+            x += font.getlength(run)
+
+    def _runs(self, text: str):
+        run, run_font = "", None
+        for ch in text:
+            font = next((f for f, cmap in self._fonts if ord(ch) in cmap), self._fonts[0][0])
+            if run and font is not run_font:
+                yield run_font, run
+                run = ""
+            run, run_font = run + ch, font
+        if run:
+            yield run_font, run
+
+
+@functools.lru_cache(maxsize=None)
+def _cmap(path: Path, index: int) -> frozenset[int]:
+    with TTFont(path, lazy=True, fontNumber=index) as face:
+        return frozenset(face.getBestCmap())
+
+
+def _ellipsize(text: str, fonts: _FontStack, max_width: float) -> str:
+    if not text or fonts.width(text) <= max_width:
         return text
 
     trimmed = text
-    while len(trimmed) > 1 and font.getlength(trimmed + "\u2026") > max_width:
+    while len(trimmed) > 1 and fonts.width(trimmed + "\u2026") > max_width:
         trimmed = trimmed[:-1]
 
     return trimmed + "\u2026"
+
+
+def _rtl(text: str, fonts: _FontStack, max_width: float) -> str:
+    #: Reshape and ellipsize before reordering into visual order - see CLAUDE.md.
+    return get_display(_ellipsize(arabic_reshaper.reshape(text), fonts, max_width))
 
 
 def _format_clock(seconds: float) -> str:

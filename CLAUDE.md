@@ -221,6 +221,18 @@ panel still receives the version as a number: nothing validates it there.
   business, not ours. The AirPlay side ignores its `volume:` messages for the same reason.
 - Password login is gone from Spotify. Credentials arrive by the desktop app handing off over
   zeroconf, and are persisted so later runs need no re-pick.
+- **Its Windows build also drags in six MSYS2 DLLs** - `libmpg123-0`, `libFLAC`, `libvorbisenc-2`,
+  `libvorbis-0`, `libogg-0`, `libwinpthread-1` - because CGO links them dynamically. A machine
+  without MSYS2 got Windows' bare "DLL was not found" dialog, never mentioning go-librespot. Ship
+  the whole closure, not just what `go-librespot.exe` itself imports: forcing `libogg` static (see
+  the `librespot` job's own comment for why) only settles go-librespot's own link, and the prebuilt
+  `libFLAC` and `libvorbis-0` still import the shared `libogg-0`, `libFLAC` also `libwinpthread-1`.
+  Check by dumping the import table of each staged DLL rather than trusting the exe's. CI stages and
+  bundles all six the same way as the exe itself; `deps.py` also downloads them from this repo's
+  own release if a machine still finds them missing. They land in `BIN_DIR` rather than next to the exe, because the
+  exe can be running out of a onefile temp extraction that is gone by the next launch while
+  `BIN_DIR` survives - so `LibrespotProcess` puts `BIN_DIR` on the child's `PATH` instead of relying
+  on the exe's own directory.
 
 **Playback Device**
 - This source identifies no app at all - it's WASAPI loopback on a Windows playback device the user
@@ -361,6 +373,27 @@ panel still receives the version as a number: nothing validates it there.
 - The cover renderer caches the composed ground (blurred backdrop plus art) per artwork version and
   redraws only the text over it. The blur is most of the frame cost - 77 ms against 6 ms for a text
   redraw - and only the progress and track fields change between frames.
+- Pillow draws glyphs in raw codepoint order with no bidi algorithm or Arabic joining, so RTL text
+  (Hebrew, Arabic) came out backwards - "יום אחד" as "דחא םוי". `frames._rtl` reshapes with
+  arabic-reshaper and reorders with python-bidi right before drawing; `_ellipsize` still runs first,
+  on the reshaped *logical* string, since trimming already-reordered text cuts from the wrong end.
+- Pillow does no font substitution of its own - a codepoint missing from a font draws as that font's
+  `.notdef` tofu box, silently. Segoe UI covers only a fraction of Unicode, so track metadata in
+  Japanese, Ethiopic, Canadian Aboriginal Syllabics, Indic scripts, Thai/Lao, Tibetan, Yi or Phags-pa
+  drew as boxes. `frames._FontStack` checks real glyph coverage per character via `fontTools`' cmap
+  and splits the string into runs, each drawn by the first font in `_TITLE_FONTS`/`_BODY_FONTS` that
+  has the character - so Latin mixed into a title keeps Segoe UI's weight rather than a fallback's.
+  **Measure through the same stack.** `_ellipsize` asks it for the width, because a character that
+  needs a fallback measures as Segoe UI's `.notdef` advance in the primary font - 420 px against
+  Yu Gothic's 640 px for twenty kana at 32 px - and a title trimmed on that number runs off the frame.
+- The fallback list is exactly the specialty fonts Windows itself ships and falls back to for the
+  same reason, so adding an entry when a new script turns up broken costs nothing. They are optional
+  Windows components, though, and absent on N/LTSC images or where a language feature was removed:
+  `_FontStack` skips a name whose file is missing rather than letting `ImageFont.truetype` raise,
+  which would take the whole video path down. Watch the file names - Nirmala UI ships only as the
+  collection `Nirmala.ttc`, whose face 1 is the bold, and there is no `NirmalaB.ttf`; hence the
+  `(name, index)` pairs. Only Yu Gothic and Nirmala UI have a bold face at all; the rest are used at
+  regular weight even in the title.
 
 ## Control panel (`wwwroot/`)
 
