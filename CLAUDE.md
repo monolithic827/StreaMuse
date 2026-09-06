@@ -297,11 +297,15 @@ panel still receives the version as a number: nothing validates it there.
   arabic-reshaper and reorders with python-bidi right before drawing; `_ellipsize` still runs first,
   on the reshaped *logical* string, since trimming already-reordered text cuts from the wrong end.
 - Pillow does no font substitution of its own - a codepoint missing from a font draws as that font's
-  `.notdef` tofu box, silently. Segoe UI has no CJK glyphs at all, so a Japanese title needs Yu Gothic
-  (the font Windows itself falls back to since 8.1). `frames._draw_with_cjk_fallback` checks real
-  glyph coverage per character via `fontTools`' cmap (`frames._cmap`, cached per font file) and only
-  routes the characters Segoe UI actually lacks through Yu Gothic, so Latin text mixed into a title
-  keeps its Segoe UI weight instead of picking up Yu Gothic's.
+  `.notdef` tofu box, silently. Segoe UI covers only a fraction of Unicode, so track metadata in
+  Japanese, Ethiopic, Canadian Aboriginal Syllabics, Indic scripts, Thai/Lao, Tibetan, Yi or Phags-pa
+  drew as boxes. `frames._draw_with_fallback` checks real glyph coverage per character via
+  `fontTools`' cmap (`frames._cmap`, cached per font file) and routes each character through the
+  first font in `_FALLBACK_TITLE`/`_FALLBACK_BODY` that actually has it, so Latin text mixed into a
+  title keeps Segoe UI's weight instead of picking up a fallback font's. The fallback list is exactly
+  the specialty fonts (Yu Gothic, Ebrima, Gadugi, Nirmala UI, Leelawadee UI, Segoe UI Symbol,
+  Himalaya, Yi Baiti, PhagsPa) Windows itself ships and falls back to for the same reason - not a
+  bundled font, so it costs nothing to add another entry when a new script turns up broken.
 
 ## Control panel (`wwwroot/`)
 
