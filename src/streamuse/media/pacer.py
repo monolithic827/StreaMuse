@@ -27,6 +27,7 @@ WRITE_INTERVAL_MS = 20
 class AudioPacer:
     def __init__(self, sample_rate: int) -> None:
         self.sample_rate = sample_rate
+        self._mixer = None
         self._lock = threading.Lock()
         self._pending: deque[bytes] = deque()
         self._head_offset = 0
@@ -35,6 +36,9 @@ class AudioPacer:
         self._silence_frames = 0
         self._dropped_frames = 0
         self.has_signal = False
+
+    def set_mixer(self, mixer) -> None:
+        self._mixer = mixer
 
     def push(self, chunk: bytes) -> None:
         """Called from receiver threads as well as the loop."""
@@ -104,6 +108,13 @@ class AudioPacer:
                 silence_in_window += silent_frames
                 with self._lock:
                     self._silence_frames += silent_frames
+
+            # The DJ mixer blends in on the pacer's own tick, never on receiver delivery - a deck
+            # driven by the receiver callback would freeze exactly when the live source goes quiet,
+            # which is the one case the mixer exists to paper over. chunk is always full-length real
+            # or silence-padded audio by this point, whichever it turns out to be.
+            if self._mixer is not None:
+                chunk = self._mixer.mix(chunk)
 
             writer.write(chunk)
             await writer.drain()

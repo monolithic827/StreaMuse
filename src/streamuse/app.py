@@ -13,10 +13,13 @@ import threading
 from . import paths, settings as settings_module, ui
 from .artwork import ArtworkStore
 from .deps import DependencyManager
+from .dj.library import TrackLibrary
+from .dj.mixer import DjMixer
 from .media import hls
 from .media.pipeline import StreamPipeline
 from .sources import SAMPLE_RATE, SourceManager
 from .sources.airplay.receiver import AirPlayReceiver
+from .sources.device.receiver import DeviceReceiver
 from .sources.spotify.receiver import SpotifyReceiver
 from .state import StateHub
 from .tunnel import CloudflaredTunnel
@@ -59,18 +62,25 @@ def build(hub, settings, control_port: int, public_port: int):
     artwork = ArtworkStore()
     deps = DependencyManager(hub)
     tunnel = CloudflaredTunnel(settings, hub, deps, public_port)
+
+    # dj needs sources (to pause/resume it), sources needs pipeline.push_audio (as its sink), and
+    # pipeline needs dj (to hand to the pacer) - pipeline.set_dj breaks that three-way cycle.
     pipeline = StreamPipeline(settings, hub, deps, artwork, tunnel, SAMPLE_RATE)
 
     sources = SourceManager(settings, hub, artwork, pipeline.push_audio, {
         "apple": AirPlayReceiver(settings, hub, artwork),
         "spotify": SpotifyReceiver(settings, hub, artwork, deps),
+        "device": DeviceReceiver(settings, hub),
     })
+    library = TrackLibrary(settings, hub, deps, paths.DATA_DIR / "dj-library.json")
+    dj = DjMixer(settings, hub, deps, sources, library, SAMPLE_RATE)
+    pipeline.set_dj(dj)
 
     control_app = control.build_app(
-        hub, deps, artwork, settings, pipeline, tunnel, sources, public_port)
-    public_app = public.build_app(hub, artwork, settings)
+        hub, deps, artwork, settings, pipeline, tunnel, sources, dj, public_port)
+    public_app = public.build_app(hub, artwork, settings, dj)
 
-    return artwork, deps, tunnel, pipeline, sources, control_app, public_app
+    return artwork, deps, tunnel, pipeline, sources, dj, control_app, public_app
 
 
 async def serve(app: web.Application, port: int) -> web.AppRunner:
@@ -95,7 +105,7 @@ def pick_port(preferred: int) -> int:
 def main() -> None:
     _use_utf8()
     parser = argparse.ArgumentParser(prog="streamuse")
-    parser.add_argument("--test-receiver", choices=("apple", "spotify"),
+    parser.add_argument("--test-receiver", choices=("apple", "spotify", "device"),
                         help="run one receiver alone and report what it delivers")
     parser.add_argument("seconds", nargs="?", type=int, default=30)
     arguments = parser.parse_args()
@@ -117,7 +127,7 @@ def main() -> None:
     hub.bind_loop(runtime.loop)
     runtime.start()
 
-    artwork, deps, tunnel, pipeline, sources, control_app, public_app = build(
+    artwork, deps, tunnel, pipeline, sources, dj, control_app, public_app = build(
         hub, settings, control_port, public_port)
 
     hub.set_local_url(hls.local_url(public_port, settings.streamKey))
@@ -128,18 +138,19 @@ def main() -> None:
     ]
     hub.info(f"control panel on 127.0.0.1:{control_port}, HLS on 127.0.0.1:{public_port}")
 
-    runtime.spawn(_prepare(hub, deps, sources, settings))
+    runtime.spawn(_prepare(hub, deps, sources, settings, dj))
 
-    ui.run(f"http://127.0.0.1:{control_port}/", settings)
+    ui.run(f"http://127.0.0.1:{control_port}/", f"http://127.0.0.1:{control_port}/dj", settings)
 
     _shutdown(runtime, hub, pipeline, sources, tunnel, runners)
 
 
-async def _prepare(hub, deps, sources, settings) -> None:
+async def _prepare(hub, deps, sources, settings, dj) -> None:
     # The receiver needs none of the downloads, and behind ~135 MB of them a first launch offers
     # Apple Music no speaker to pick for minutes. ffmpeg and cloudflared are wanted later, by the
     # stream and tunnel buttons, and both say so themselves when they are missing.
     sources.start_publishing()
+    dj.start()
     await sources.select(settings.source)
 
     try:

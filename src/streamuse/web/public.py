@@ -46,13 +46,13 @@ def is_safe_name(name: str) -> bool:
         "/" in name or "\\" in name or ".." in name or _DRIVE_RELATIVE.match(name))
 
 
-def build_app(hub, artwork, settings) -> web.Application:
+def build_app(hub, artwork, settings, dj) -> web.Application:
     app = web.Application()
-    app.router.add_route("*", "/{tail:.*}", _make_handler(hub, artwork, settings))
+    app.router.add_route("*", "/{tail:.*}", _make_handler(hub, artwork, settings, dj))
     return app
 
 
-def _make_handler(hub, artwork, settings):
+def _make_handler(hub, artwork, settings, dj):
     async def handle(request: web.Request) -> web.StreamResponse:
         if request.method not in ("GET", "HEAD"):
             return _not_found()
@@ -73,9 +73,9 @@ def _make_handler(hub, artwork, settings):
         if name == "":
             return _serve_asset(request, "listen.html")
         if name == "now":
-            return _serve_now(request, hub)
+            return _serve_now(request, hub, dj)
         if name == "art":
-            return _serve_art(request, hub, artwork)
+            return _serve_art(request, hub, artwork, dj)
         if name.lower().endswith((".m3u8", ".ts")):
             return _serve_hls(request, name)
         return _serve_asset(request, name)
@@ -159,10 +159,26 @@ def _version() -> str:
     return _asset_version
 
 
-def _serve_now(request: web.Request, hub) -> web.Response:
-    now = hub.now_playing
+def _serve_now(request: web.Request, hub, dj) -> web.Response:
+    # The DJ track is already what the video shows once it's mixing (see CoverFrameRenderer), so
+    # this has to agree with it - otherwise a listener combining the two sees a paused source's
+    # metadata under audibly different, currently-playing audio.
+    dj_state = dj.snapshot()
+    playing_track = dj_state.nowMixing
 
-    if hub.encoder.status == RUNNING:
+    if hub.encoder.status == RUNNING and playing_track is not None:
+        payload = {
+            "title": playing_track.title,
+            "artist": playing_track.artist,
+            "album": dj_state.album,
+            "playing": True,
+            "positionSeconds": dj_state.positionSeconds,
+            "durationSeconds": dj_state.durationSeconds,
+            "artworkVersion": str(dj_state.artworkVersion),
+            "live": True,
+        }
+    elif hub.encoder.status == RUNNING:
+        now = hub.now_playing
         payload = {
             "title": now.title,
             "artist": now.artist,
@@ -181,13 +197,15 @@ def _serve_now(request: web.Request, hub) -> web.Response:
     return _send(request, dumps(payload).encode(), "application/json; charset=utf-8", "no-store")
 
 
-def _serve_art(request: web.Request, hub, artwork) -> web.StreamResponse:
+def _serve_art(request: web.Request, hub, artwork, dj) -> web.StreamResponse:
     # The tunnel outlives the encoder, so with the stream stopped this must answer nothing at all -
     # otherwise anyone holding the hostname could poll what the machine plays locally.
     if hub.encoder.status != RUNNING:
         return _not_found()
 
-    version, data = artwork.current
+    mixing = dj.snapshot().nowMixing is not None
+    version, data = dj.artwork.current if mixing else artwork.current
+
     if not data:
         return _not_found()
 

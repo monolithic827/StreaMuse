@@ -1,7 +1,7 @@
-"""Resolves ffmpeg, cloudflared and go-librespot.
+"""Resolves ffmpeg, cloudflared, go-librespot and yt-dlp.
 
 The exe ships all three, so nothing here runs for the people who download one. From a source
-checkout ffmpeg and cloudflared are downloaded into the app's own bin folder instead, and
+checkout ffmpeg, cloudflared and yt-dlp are downloaded into the app's own bin folder instead, and
 go-librespot is only ever looked for - see vendor/go-librespot/README.md and CLAUDE.md's Spotify
 section for why its audio-decoding DLLs are the one part of it that gets downloaded."""
 
@@ -39,6 +39,8 @@ GO_LIBRESPOT_LIBS = (
     "libwinpthread-1.dll",
 )
 
+YT_DLP_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+
 USER_AGENT = "StreaMuse/1.0"
 
 
@@ -48,6 +50,7 @@ class DependencyManager:
         self._gate = asyncio.Lock()
         self.ffmpeg: str | None = None
         self.cloudflared: str | None = None
+        self.yt_dlp: str | None = None
 
     @property
     def go_librespot(self) -> str | None:
@@ -57,18 +60,24 @@ class DependencyManager:
         return resolve("go-librespot.exe")
 
     async def ensure_all(self) -> None:
-        """Resolves every tool, downloading anything missing. Safe to call repeatedly."""
+        """Resolves ffmpeg, cloudflared, go-librespot and yt-dlp, downloading anything missing. Safe
+        to call repeatedly."""
         async with self._gate:
             paths.BIN_DIR.mkdir(parents=True, exist_ok=True)
             self.ffmpeg = await self._ensure_ffmpeg()
             self.cloudflared = await self._ensure_single("cloudflared.exe", CLOUDFLARED_URL, "cloudflared")
+            self.yt_dlp = await self._ensure_single("yt-dlp.exe", YT_DLP_URL, "yt-dlp")
             await self._ensure_librespot_libs()
 
-            self._hub.set_dependencies([
-                DependencyView("ffmpeg", self.ffmpeg),
-                DependencyView("cloudflared", self.cloudflared),
-                DependencyView("go-librespot", self.go_librespot),
-            ])
+            self._publish()
+
+    def _publish(self) -> None:
+        self._hub.set_dependencies([
+            DependencyView("ffmpeg", self.ffmpeg),
+            DependencyView("cloudflared", self.cloudflared),
+            DependencyView("go-librespot", self.go_librespot),
+            DependencyView("yt-dlp", self.yt_dlp),
+        ])
 
     async def _ensure_ffmpeg(self) -> str | None:
         existing = resolve("ffmpeg.exe")

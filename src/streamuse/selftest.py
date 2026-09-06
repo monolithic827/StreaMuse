@@ -58,6 +58,10 @@ def _build(source: str, settings, hub, artwork, deps):
         from .sources.airplay.receiver import AirPlayReceiver
         return AirPlayReceiver(settings, hub, artwork)
 
+    if source == "device":
+        from .sources.device.receiver import DeviceReceiver
+        return DeviceReceiver(settings, hub)
+
     from .sources.spotify.receiver import SpotifyReceiver
     return SpotifyReceiver(settings, hub, artwork, deps)
 

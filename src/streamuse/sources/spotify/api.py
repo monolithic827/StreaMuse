@@ -11,7 +11,13 @@ import aiohttp
 RECONNECT_DELAY = 2
 REQUEST_TIMEOUT = 5
 
-COMMANDS = {"playpause": "playpause", "next": "next", "prev": "prev"}
+COMMANDS = {
+    "playpause": "playpause",
+    "pause": "pause",
+    "resume": "resume",
+    "next": "next",
+    "prev": "prev",
+}
 
 
 class LibrespotApi:

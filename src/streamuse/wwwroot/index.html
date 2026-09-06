@@ -29,6 +29,12 @@
         <path d="M12 2v2m0 16v2M4.9 4.9l1.5 1.5m11.2 11.2 1.5 1.5M2 12h2m16 0h2M4.9 19.1l1.5-1.5M17.6 6.4l1.5-1.5" />
       </svg>
     </button>
+    <button class="btn btn-icon btn-secondary" id="btn-dj" aria-label="Open DJ" title="Open DJ">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <circle cx="8" cy="16" r="3" /><circle cx="18" cy="14" r="3" />
+        <path d="M11 16V5l10-2v11" />
+      </svg>
+    </button>
     <button class="btn btn-icon btn-secondary" id="btn-settings" aria-label="Settings" title="Settings">
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <path d="M20 7h-9M14 17H5" />
@@ -99,9 +105,22 @@
           <label class="seg-opt src-opt" data-source-opt="spotify">
             <input type="radio" name="src" value="spotify" data-source>Spotify
           </label>
+          <label class="seg-opt seg-opt-icon src-opt" data-source-opt="device"
+            aria-label="Playback Device" title="Playback Device">
+            <input type="radio" name="src" value="device" data-source>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <circle cx="5" cy="19" r="2.2" />
+              <circle cx="19" cy="5" r="2.2" />
+              <path d="M6.6 17.4c2.6-2.6 1-5.4 3.4-7.8s5.2-.8 7.8-3.4" />
+            </svg>
+          </label>
         </div>
         <div class="conn">
           <i data-bind="connDot"></i><span data-bind="connLabel">Starting up…</span>
+        </div>
+        <div class="field" id="device-picker" hidden style="margin-top:var(--space-2)">
+          <label>Capture device</label>
+          <select class="input" id="set-device"></select>
         </div>
       </section>
 
@@ -180,9 +199,15 @@
       </div>
 
       <div class="dialog-body settings-body">
-        <div class="field">
-          <label for="set-name">Receiver name - what Apple Music and Spotify list</label>
-          <input class="input" id="set-name" maxlength="63">
+        <div class="grid2">
+          <div class="field">
+            <label for="set-name">AirPlay name - what Apple Music lists</label>
+            <input class="input" id="set-name" maxlength="63">
+          </div>
+          <div class="field">
+            <label for="set-spotify-name">Spotify Connect device name</label>
+            <input class="input" id="set-spotify-name" placeholder="StreaMuse" maxlength="63">
+          </div>
         </div>
 
         <div class="field">
@@ -247,6 +272,44 @@
 
         <label class="radio"><input type="checkbox" id="set-autotunnel"><span class="dot"></span>Start the tunnel
           automatically with the stream</label>
+
+        <hr class="hr">
+
+        <div class="field">
+          <label>DJ mode</label>
+          <div class="seg" style="width:100%">
+            <label class="seg-opt" style="flex:1;justify-content:center" data-mode-opt="radio">
+              <input type="radio" name="djmode" value="radio" data-dj-mode>Radio DJ
+            </label>
+            <label class="seg-opt" style="flex:1;justify-content:center" data-mode-opt="rave">
+              <input type="radio" name="djmode" value="rave" data-dj-mode>Rave DJ
+            </label>
+          </div>
+          <p class="micro">Rave DJ also picks its own next track from the learned library once
+            nothing's queued, instead of falling back to the captured app.</p>
+        </div>
+
+        <div class="grid2">
+          <div class="field">
+            <label>DJ crossfade length - <span id="lbl-dj-crossfade">8s</span></label>
+            <input class="input range" type="range" id="set-dj-crossfade" min="2" max="30" step="1">
+          </div>
+          <div class="field">
+            <label>Sound effects</label>
+            <label class="radio"><input type="checkbox" id="set-dj-sfx"><span class="dot"></span>Occasional drop-in
+              accents</label>
+            <p class="micro">Picks at random from files dropped into the dj-sfx folder in StreaMuse's data
+              directory.</p>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Library learning speed - <span id="lbl-dj-concurrency">4</span> at once</label>
+          <input class="input range" type="range" id="set-dj-concurrency" min="1" max="12" step="1">
+          <p class="micro">How many tracks the library analyzes at once when learning a playlist.
+            Higher is faster but more likely to be rate-limited - back it off if learning starts
+            failing partway through.</p>
+        </div>
 
         <hr class="hr">
 

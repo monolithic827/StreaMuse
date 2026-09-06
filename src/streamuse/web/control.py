@@ -1,17 +1,22 @@
 """Loopback-only control surface. Never exposed through the tunnel."""
 
+import asyncio
+from dataclasses import asdict
+
 from aiohttp import web
 
 from .. import paths, settings as settings_module
 from ..artwork import content_type_of
 from ..media import hls
+from ..sources.device.receiver import list_devices
 from ..state import dumps
 
 IMMUTABLE = "public, max-age=31536000, immutable"
 PLAYER_COMMANDS = ("playpause", "next", "prev")
 
 
-def build_app(hub, deps, artwork, settings, pipeline, tunnel, sources, public_port: int) -> web.Application:
+def build_app(hub, deps, artwork, settings, pipeline, tunnel, sources, dj,
+             public_port: int) -> web.Application:
     app = web.Application()
 
     async def state(_request):
@@ -67,6 +72,9 @@ def build_app(hub, deps, artwork, settings, pipeline, tunnel, sources, public_po
         await deps.ensure_all()
         return web.Response()
 
+    async def devices(_request):
+        return _json(list_devices())
+
     async def player(request):
         command = request.match_info["command"]
         if command not in PLAYER_COMMANDS:
@@ -84,6 +92,68 @@ def build_app(hub, deps, artwork, settings, pipeline, tunnel, sources, public_po
     async def index(_request):
         return _file(paths.wwwroot() / "index.html", "text/html")
 
+    async def dj_page(_request):
+        return _file(paths.wwwroot() / "dj.html", "text/html")
+
+    async def dj_request(request):
+        try:
+            body = await request.json()
+        except ValueError:
+            raise web.HTTPBadRequest()
+
+        query = str(body.get("query", "") or "").strip()
+        if not query:
+            raise web.HTTPBadRequest()
+
+        video_id = str(body.get("videoId") or "").strip() or None
+        return _json(asdict(dj.request(query, video_id)))
+
+    async def dj_search(request):
+        try:
+            body = await request.json()
+        except ValueError:
+            raise web.HTTPBadRequest()
+
+        query = str(body.get("query", "") or "").strip()
+        if not query:
+            return _json([])
+
+        try:
+            results = await dj.search(query)
+        except Exception as exc:
+            raise web.HTTPInternalServerError(text=str(exc))
+
+        return _json([{"videoId": r.video_id, "title": r.title, "artist": r.artist,
+                       "thumbnail": r.thumbnail} for r in results])
+
+    async def dj_skip(_request):
+        dj.skip()
+        return web.Response()
+
+    async def dj_harvest_live(_request):
+        asyncio.create_task(dj.harvest_live())
+        return web.Response()
+
+    async def dj_harvest_playlist(request):
+        try:
+            body = await request.json()
+        except ValueError:
+            raise web.HTTPBadRequest()
+
+        url = str(body.get("url", "") or "").strip()
+        if not url:
+            raise web.HTTPBadRequest()
+
+        asyncio.create_task(dj.harvest_playlist(url))
+        return web.Response()
+
+    async def dj_art(_request):
+        data = dj.artwork.bytes
+        if not data:
+            raise web.HTTPNotFound()
+        return web.Response(body=data, content_type=content_type_of(data),
+                            headers={"Cache-Control": IMMUTABLE})
+
     app.router.add_get("/api/state", state)
     app.router.add_get("/api/art", art)
     app.router.add_post("/api/settings", save_settings)
@@ -92,9 +162,17 @@ def build_app(hub, deps, artwork, settings, pipeline, tunnel, sources, public_po
     app.router.add_post("/api/tunnel/start", tunnel_start)
     app.router.add_post("/api/tunnel/stop", tunnel_stop)
     app.router.add_post("/api/deps/refresh", deps_refresh)
+    app.router.add_get("/api/devices", devices)
     app.router.add_post("/api/player/{command}", player)
+    app.router.add_post("/api/dj/request", dj_request)
+    app.router.add_post("/api/dj/search", dj_search)
+    app.router.add_post("/api/dj/skip", dj_skip)
+    app.router.add_post("/api/dj/harvest-live", dj_harvest_live)
+    app.router.add_post("/api/dj/harvest-playlist", dj_harvest_playlist)
+    app.router.add_get("/api/dj/art", dj_art)
     app.router.add_get("/ws", websocket)
     app.router.add_get("/", index)
+    app.router.add_get("/dj", dj_page)
     app.router.add_static("/", paths.wwwroot())
 
     return app

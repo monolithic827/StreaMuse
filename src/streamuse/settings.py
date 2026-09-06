@@ -5,9 +5,10 @@ from dataclasses import asdict, dataclass, fields
 
 from . import paths
 
-SOURCES = ("apple", "spotify")
+SOURCES = ("apple", "spotify", "device")
 TUNNEL_MODES = ("Quick", "Named")
 THEMES = ("Auto", "Dark", "Light")
+DJ_MODES = ("radio", "rave")
 
 
 @dataclass
@@ -17,8 +18,13 @@ class Settings:
     #: Path component of the public playlist: /live/{streamKey}/index.m3u8.
     streamKey: str = "parlour"
 
-    #: The name Apple Music and Spotify show in their device pickers.
+    #: What Apple Music shows in its AirPlay device picker.
     receiverName: str = "StreaMuse"
+
+    #: What Spotify shows in its Connect device picker - kept separate from receiverName since a
+    #: phone's Connect list and Apple Music's AirPlay list are different audiences a user may
+    #: reasonably want labelled differently.
+    spotifyConnectDeviceName: str = "StreaMuse"
 
     width: int = 1280
     height: int = 720
@@ -36,11 +42,28 @@ class Settings:
     logExpanded: bool = False
     theme: str = "Auto"
 
+    djCrossfadeSeconds: float = 8.0
+    djSfxEnabled: bool = True
+
+    #: "radio" only ever mixes in what's requested. "rave" also picks its own next track from the
+    #: learned library once nothing's queued, instead of falling back to the captured app.
+    djMode: str = "radio"
+
+    #: How many tracks the library analyzes at once when learning a playlist. Bounded, not unbounded
+    #: - too many concurrent yt-dlp downloads reads as automated abuse to YouTube's own side.
+    djLibraryConcurrency: int = 4
+
+    #: A WASAPI loopback device name for the "device" source. Empty means none picked yet - unlike
+    #: receiverName/spotifyConnectDeviceName this has no fallback default, since an empty value is a
+    #: real, distinct state (DeviceReceiver.available reports it as "pick one in Settings first").
+    deviceCaptureName: str = ""
+
     def normalized(self) -> "Settings":
         """Clamps anything a hand-edited file (or a stale schema) could have made invalid."""
         self.source = self.source if self.source in SOURCES else "apple"
         self.streamKey = _sanitize_key(self.streamKey)
         self.receiverName = (self.receiverName or "").strip()[:63] or "StreaMuse"
+        self.spotifyConnectDeviceName = (self.spotifyConnectDeviceName or "").strip()[:63] or "StreaMuse"
         self.width = _clamp(_even_up(self.width), 256, 3840)
         self.height = _clamp(_even_up(self.height), 256, 2160)
         self.fps = _clamp(self.fps, 1, 30)
@@ -48,6 +71,10 @@ class Settings:
         self.audioBitrateKbps = _clamp(self.audioBitrateKbps, 64, 512)
         self.tunnelMode = self.tunnelMode if self.tunnelMode in TUNNEL_MODES else "Quick"
         self.theme = self.theme if self.theme in THEMES else "Auto"
+        self.djCrossfadeSeconds = _clamp_float(self.djCrossfadeSeconds, 2.0, 30.0)
+        self.deviceCaptureName = (self.deviceCaptureName or "").strip()[:255]
+        self.djMode = self.djMode if self.djMode in DJ_MODES else "radio"
+        self.djLibraryConcurrency = _clamp(self.djLibraryConcurrency, 1, 12)
         return self
 
     def apply(self, other: "Settings") -> None:
@@ -100,6 +127,10 @@ def from_dict(raw: dict) -> Settings:
 
 
 def _clamp(value: int, low: int, high: int) -> int:
+    return max(low, min(high, value))
+
+
+def _clamp_float(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 

@@ -11,6 +11,8 @@ from .mdns import resolve_dacp
 
 COMMANDS = {
     "playpause": "playpause",
+    "pause": "pause",
+    "resume": "play",
     "next": "nextitem",
     "prev": "previtem",
 }

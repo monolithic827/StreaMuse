@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>StreaMuse DJ</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="app.css">
+</head>
+
+<body class="dj-body">
+
+  <div class="titlebar pywebview-drag-region" id="titlebar">
+    <span class="titlebar-name">StreaMuse<span style="color:var(--color-accent)">·</span>DJ</span>
+    <div class="titlebar-actions">
+      <button class="titlebar-btn" id="tb-min" aria-label="Minimise" title="Minimise">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M5 12h14" />
+        </svg>
+      </button>
+      <button class="titlebar-btn" id="tb-close" aria-label="Close" title="Close">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M18 6 6 18M6 6l12 12" />
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <div class="dj-window">
+
+    <section class="card blueprint">
+      <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+      <h6 class="card-head">Request</h6>
+      <div style="display:flex;gap:var(--space-2)">
+        <input class="input" id="dj-query" placeholder="artist - title" style="flex:1">
+        <button class="btn btn-primary" id="dj-search" style="flex:none">Search</button>
+      </div>
+      <div class="dj-results" id="dj-results" hidden></div>
+      <p class="micro" id="dj-hint">Fetched, auditioned, then mixed in on the beat.</p>
+    </section>
+
+    <section class="card blueprint dj-now">
+      <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+      <div style="display:flex;align-items:center;gap:var(--space-2)">
+        <h6 class="card-head" style="margin:0">Now mixing</h6>
+        <span class="tag upper" id="dj-tag" style="margin-left:auto">idle</span>
+      </div>
+
+      <div style="display:flex;gap:var(--space-3)">
+        <figure class="blueprint art dj-art" id="dj-art-figure">
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          <img id="dj-art" alt="" hidden>
+          <span class="art-empty" id="dj-art-empty">No artwork</span>
+        </figure>
+
+        <div style="min-width:0;display:flex;flex-direction:column;gap:var(--space-1)">
+          <h2 class="clamp2" id="dj-title" style="font-size:16px;margin:0">Nothing playing</h2>
+          <p class="artist" id="dj-artist" style="margin:0"></p>
+          <p class="micro" id="dj-status">Nothing queued</p>
+        </div>
+      </div>
+
+      <div class="progress-block">
+        <div class="progress-track"><i id="dj-progress-fill"></i></div>
+        <div class="progress-times">
+          <span id="dj-elapsed">0:00</span><span id="dj-duration">--:--</span>
+        </div>
+      </div>
+
+      <button class="btn btn-secondary" id="dj-skip" style="align-self:flex-start;font-size:12px">Skip to
+        next</button>
+    </section>
+
+    <section class="card blueprint" style="flex:1">
+      <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+      <h6 class="card-head">Queue</h6>
+      <div id="dj-queue" class="log-list" style="flex:1;min-height:60px"></div>
+    </section>
+
+    <section class="card blueprint">
+      <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+      <h6 class="card-head">Learn (for Rave DJ mode)</h6>
+      <p class="micro">
+        Walks forward through what's already playing and learns each track - do this before starting
+        the stream, since skipping through is real playback.
+      </p>
+      <button class="btn btn-secondary btn-block" id="dj-learn-live">Learn from what's playing</button>
+      <div style="display:flex;gap:var(--space-2);margin-top:var(--space-2)">
+        <input class="input" id="dj-playlist-url" placeholder="YouTube Music playlist URL" style="flex:1">
+        <button class="btn btn-secondary" id="dj-learn-playlist" style="flex:none">Learn</button>
+      </div>
+      <p class="micro" id="dj-learn-hint"></p>
+    </section>
+
+    <p class="micro" style="text-align:center;opacity:.6">
+      Tracks and artwork via yt-dlp / music.youtube.com
+    </p>
+
+  </div>
+
+  <script src="dj.js"></script>
+</body>
+
+</html>

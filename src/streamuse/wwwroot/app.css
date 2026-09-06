@@ -295,6 +295,11 @@ body {
   background: transparent;
 }
 
+.seg-opt-icon {
+  flex: none;
+  padding: 7px 10px;
+}
+
 .target-row {
   display: flex;
   align-items: center;
@@ -490,6 +495,50 @@ body.log-closed .health-panel {
   word-break: break-word;
 }
 
+.dj-results {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.dj-result {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-1) var(--space-2);
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dj-result:hover {
+  background: color-mix(in srgb, var(--color-text) 8%, transparent);
+}
+
+.dj-result img {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-md);
+  object-fit: cover;
+  background: color-mix(in srgb, var(--color-text) 10%, transparent);
+}
+
+.dj-result-text {
+  min-width: 0;
+}
+
+.dj-result-artist {
+  color: color-mix(in srgb, var(--color-text) 55%, transparent);
+}
+
 /* - settings - */
 .dialog-backdrop[hidden] {
   display: none;
@@ -600,4 +649,81 @@ body.log-closed .health-panel {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+/* - DJ window - frameless, so the page draws its own titlebar and posts chrome commands back. */
+.dj-body {
+  display: flex;
+  flex-direction: column;
+}
+
+.titlebar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 30px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--color-divider);
+}
+
+.titlebar-name {
+  font-family: var(--font-heading);
+  font-size: 11px;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--color-text) 60%, transparent);
+}
+
+.titlebar-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.titlebar-btn {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: color-mix(in srgb, var(--color-text) 70%, transparent);
+  cursor: pointer;
+}
+
+.titlebar-btn:hover {
+  background: color-mix(in srgb, var(--color-text) 10%, transparent);
+  color: var(--color-text);
+}
+
+#tb-close:hover {
+  background: var(--color-accent);
+  color: var(--color-bg);
+}
+
+.dj-window {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  overflow-y: auto;
+}
+
+.dj-window .card {
+  flex: none;
+}
+
+.dj-now {
+  gap: var(--space-2);
+}
+
+.dj-art {
+  height: 96px;
+  margin-inline: 0;
+  flex: none;
 }

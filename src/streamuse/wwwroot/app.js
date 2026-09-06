@@ -1,7 +1,7 @@
 'use strict';
 
 const METER_BARS = 34;
-const SOURCE_LABELS = { apple: 'Apple Music', spotify: 'Spotify' };
+const SOURCE_LABELS = { apple: 'Apple Music', spotify: 'Spotify', device: 'Playback Device' };
 const THEMES = ['Auto', 'Dark', 'Light'];
 
 const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
@@ -225,6 +225,32 @@ function renderSourceOptions(view) {
     radio.disabled = !available;
     radio.checked = radio.value === state.source.source;
   }
+
+  const onDevice = state.source.source === 'device';
+  document.getElementById('device-picker').hidden = !onDevice;
+  if (onDevice && !deviceOptionsLoaded) populateDeviceOptions();
+}
+
+let deviceOptionsLoaded = false;
+
+async function populateDeviceOptions() {
+  // Set first, not after: a fetch failure must not retry on every render tick.
+  deviceOptionsLoaded = true;
+  const select = document.getElementById('set-device');
+
+  try {
+    const response = await fetch('/api/devices');
+    const names = await response.json();
+
+    select.replaceChildren(...names.map(name => {
+      const option = document.createElement('option');
+      option.value = name;
+      option.textContent = name;
+      return option;
+    }));
+
+    select.value = settings.deviceCaptureName;
+  } catch { /* left empty - the field itself still shows unavailable via renderSourceOptions */ }
 }
 
 function renderCover() {
@@ -362,6 +388,7 @@ function openSettings() {
 
 function fillSettings() {
   document.getElementById('set-name').value = settings.receiverName;
+  document.getElementById('set-spotify-name').value = settings.spotifyConnectDeviceName;
   document.getElementById('set-key').value = settings.streamKey;
   document.getElementById('set-vbr').value = settings.videoBitrateKbps;
   document.getElementById('set-abr').value = settings.audioBitrateKbps;
@@ -370,6 +397,9 @@ function fillSettings() {
   document.getElementById('set-token').value = settings.namedTunnelToken;
   document.getElementById('set-host').value = settings.namedTunnelHostname;
   document.getElementById('set-autotunnel').checked = settings.autoTunnel;
+  document.getElementById('set-dj-crossfade').value = settings.djCrossfadeSeconds;
+  document.getElementById('set-dj-sfx').checked = settings.djSfxEnabled;
+  document.getElementById('set-dj-concurrency').value = settings.djLibraryConcurrency;
 
   const resolution = settings.width + 'x' + settings.height;
   for (const radio of document.querySelectorAll('input[name="res"]')) {
@@ -377,6 +407,9 @@ function fillSettings() {
   }
   for (const radio of document.querySelectorAll('input[name="tmode"]')) {
     radio.checked = radio.value === settings.tunnelMode;
+  }
+  for (const radio of document.querySelectorAll('[data-dj-mode]')) {
+    radio.checked = radio.value === settings.djMode;
   }
 
   document.getElementById('named-fields').hidden = settings.tunnelMode !== 'Named';
@@ -387,6 +420,8 @@ function syncSettingLabels() {
   document.getElementById('lbl-vbr').textContent = document.getElementById('set-vbr').value + ' kbps';
   document.getElementById('lbl-abr').textContent = document.getElementById('set-abr').value + ' kbps';
   document.getElementById('lbl-fps').textContent = document.getElementById('set-fps').value + ' fps';
+  document.getElementById('lbl-dj-crossfade').textContent = document.getElementById('set-dj-crossfade').value + 's';
+  document.getElementById('lbl-dj-concurrency').textContent = document.getElementById('set-dj-concurrency').value;
 }
 
 function readSettings() {
@@ -395,6 +430,7 @@ function readSettings() {
 
   return {
     receiverName: document.getElementById('set-name').value.trim(),
+    spotifyConnectDeviceName: document.getElementById('set-spotify-name').value.trim() || 'StreaMuse',
     streamKey: document.getElementById('set-key').value.trim(),
     width: width,
     height: height,
@@ -405,7 +441,11 @@ function readSettings() {
     tunnelMode: (document.querySelector('input[name="tmode"]:checked') || {}).value || 'Quick',
     namedTunnelToken: document.getElementById('set-token').value.trim(),
     namedTunnelHostname: document.getElementById('set-host').value.trim(),
-    autoTunnel: document.getElementById('set-autotunnel').checked
+    autoTunnel: document.getElementById('set-autotunnel').checked,
+    djCrossfadeSeconds: Number(document.getElementById('set-dj-crossfade').value),
+    djSfxEnabled: document.getElementById('set-dj-sfx').checked,
+    djMode: (document.querySelector('[data-dj-mode]:checked') || {}).value || 'radio',
+    djLibraryConcurrency: Number(document.getElementById('set-dj-concurrency').value)
   };
 }
 
@@ -439,9 +479,21 @@ document.getElementById('btn-deps').onclick = async () => {
   try { await post('/api/deps/refresh'); } catch { /* logged server-side */ }
 };
 
-for (const id of ['set-vbr', 'set-abr', 'set-fps']) {
+for (const id of ['set-vbr', 'set-abr', 'set-fps', 'set-dj-crossfade', 'set-dj-concurrency']) {
   document.getElementById(id).addEventListener('input', syncSettingLabels);
 }
+
+// window.pywebview.api starts as {} and is only populated with real methods once pywebview
+// dispatches "pywebviewready" - calling open_dj() before that fires calls a plain object property,
+// throwing "open_dj is not a function" instead of doing anything.
+let pywebviewReady = false;
+window.addEventListener('pywebviewready', () => { pywebviewReady = true; });
+
+document.getElementById('btn-dj').onclick = () => {
+  if (pywebviewReady && window.pywebview && typeof window.pywebview.api.open_dj === 'function') {
+    window.pywebview.api.open_dj();
+  }
+};
 
 for (const radio of document.querySelectorAll('input[name="tmode"]')) {
   radio.addEventListener('change', () => {
@@ -454,6 +506,10 @@ for (const radio of document.querySelectorAll('[data-source]')) {
     if (radio.checked) saveSettings({ source: radio.value });
   });
 }
+
+document.getElementById('set-device').addEventListener('change', event => {
+  saveSettings({ deviceCaptureName: event.target.value });
+});
 
 for (const button of document.querySelectorAll('[data-player]')) {
   button.addEventListener('click', () => post('/api/player/' + button.dataset.player));
