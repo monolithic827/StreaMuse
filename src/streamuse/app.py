@@ -154,6 +154,7 @@ async def _prepare(hub, deps, sources, settings, dj) -> None:
     except Exception as exc:
         hub.error(f"dependency check failed: {exc}")
 
+
 def _shutdown(runtime, hub, pipeline, sources, tunnel, runners) -> None:
     """Runs with the window already gone and nothing above it to catch anything. Every step is
     attempted regardless of the ones before it: leaving ffmpeg or cloudflared running would keep the
