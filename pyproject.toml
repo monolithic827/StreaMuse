@@ -12,6 +12,7 @@ dependencies = [
     "arabic-reshaper>=3.0.1",
     "av>=18.1.0",
     "cryptography>=50.0.1",
+    "fonttools>=4.60.1",
     "pillow>=12.3.0",
     "python-bidi>=0.6.11",
     "pywebview>=6.2.1",

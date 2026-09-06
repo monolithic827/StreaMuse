@@ -296,6 +296,12 @@ panel still receives the version as a number: nothing validates it there.
   (Hebrew, Arabic) came out backwards - "יום אחד" as "דחא םוי". `frames._rtl` reshapes with
   arabic-reshaper and reorders with python-bidi right before drawing; `_ellipsize` still runs first,
   on the reshaped *logical* string, since trimming already-reordered text cuts from the wrong end.
+- Pillow does no font substitution of its own - a codepoint missing from a font draws as that font's
+  `.notdef` tofu box, silently. Segoe UI has no CJK glyphs at all, so a Japanese title needs Yu Gothic
+  (the font Windows itself falls back to since 8.1). `frames._draw_with_cjk_fallback` checks real
+  glyph coverage per character via `fontTools`' cmap (`frames._cmap`, cached per font file) and only
+  routes the characters Segoe UI actually lacks through Yu Gothic, so Latin text mixed into a title
+  keeps its Segoe UI weight instead of picking up Yu Gothic's.
 
 ## Control panel (`wwwroot/`)
 

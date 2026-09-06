@@ -1,12 +1,14 @@
 """Draws the video track as JPEG frames pushed down a socket, so the picture can change mid-stream
 without restarting ffmpeg and breaking the playlist."""
 
+import functools
 import io
 import os
 from pathlib import Path
 
 import arabic_reshaper
 from bidi import get_display
+from fontTools.ttLib import TTFont
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 JPEG_QUALITY = 88
@@ -24,6 +26,11 @@ TRACK = (0xFF, 0xFF, 0xFF, 0x33)
 
 _FONTS = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
 
+#: Segoe UI carries no CJK glyphs at all, so a Japanese title draws as .notdef tofu with no error -
+#: Yu Gothic is the font Windows itself falls back to for Japanese UI text since Windows 8.1.
+_CJK_TITLE = _FONTS / "YuGothB.ttc"
+_CJK_BODY = _FONTS / "YuGothR.ttc"
+
 
 class CoverFrameRenderer:
     def __init__(self, settings, artwork, hub) -> None:
@@ -34,9 +41,16 @@ class CoverFrameRenderer:
         self._height = settings.height
         self._overlay = settings.textOverlay
 
-        self._title_font = ImageFont.truetype(_FONTS / "seguisb.ttf", self._height * 0.075)
-        self._body_font = ImageFont.truetype(_FONTS / "segoeui.ttf", self._height * 0.045)
-        self._small_font = ImageFont.truetype(_FONTS / "segoeui.ttf", self._height * 0.033)
+        self._title_font_path = _FONTS / "seguisb.ttf"
+        self._body_font_path = _FONTS / "segoeui.ttf"
+
+        self._title_font = ImageFont.truetype(self._title_font_path, self._height * 0.075)
+        self._body_font = ImageFont.truetype(self._body_font_path, self._height * 0.045)
+        self._small_font = ImageFont.truetype(self._body_font_path, self._height * 0.033)
+
+        self._title_cjk = ImageFont.truetype(_CJK_TITLE, self._height * 0.075)
+        self._body_cjk = ImageFont.truetype(_CJK_BODY, self._height * 0.045)
+        self._small_cjk = ImageFont.truetype(_CJK_BODY, self._height * 0.033)
 
         self._art_box = _square_in(self._width, self._height,
                                    0.62 if self._overlay else 0.86, align_left=self._overlay)
@@ -124,16 +138,19 @@ class CoverFrameRenderer:
         y = self._art_box[1] + height * 0.10
 
         title = now.title or "Nothing playing"
-        draw.text((left, y), _rtl(title, self._title_font, available),
-                  font=self._title_font, fill=BRIGHT, anchor="ls")
+        _draw_with_cjk_fallback(draw, (left, y), _rtl(title, self._title_font, available),
+                                self._title_font, self._title_font_path,
+                                self._title_cjk, _CJK_TITLE, BRIGHT)
         y += height * 0.085
 
-        draw.text((left, y), _rtl(now.artist, self._body_font, available),
-                  font=self._body_font, fill=MUTED, anchor="ls")
+        _draw_with_cjk_fallback(draw, (left, y), _rtl(now.artist, self._body_font, available),
+                                self._body_font, self._body_font_path,
+                                self._body_cjk, _CJK_BODY, MUTED)
         y += height * 0.06
 
-        draw.text((left, y), _rtl(now.album, self._small_font, available),
-                  font=self._small_font, fill=FAINT, anchor="ls")
+        _draw_with_cjk_fallback(draw, (left, y), _rtl(now.album, self._small_font, available),
+                                self._small_font, self._body_font_path,
+                                self._small_cjk, _CJK_BODY, FAINT)
 
         bar_y = self._art_box[3] - height * 0.06
         bar_height = max(2.0, height * 0.006)
@@ -218,6 +235,36 @@ def _ellipsize(text: str, font, max_width: float) -> str:
 def _rtl(text: str, font, max_width: float) -> str:
     #: Reshape and ellipsize before reordering into visual order - see CLAUDE.md.
     return get_display(_ellipsize(arabic_reshaper.reshape(text), font, max_width))
+
+
+@functools.lru_cache(maxsize=None)
+def _cmap(path: Path) -> frozenset[int]:
+    kwargs = {"fontNumber": 0} if path.suffix.lower() == ".ttc" else {}
+    with TTFont(path, lazy=True, **kwargs) as face:
+        return frozenset(face.getBestCmap())
+
+
+def _draw_with_cjk_fallback(draw, xy, text: str, font, font_path: Path, cjk_font,
+                             cjk_font_path: Path, fill) -> None:
+    """Segoe UI has no CJK glyphs, so a run of characters it can't cover is drawn with `cjk_font`
+    instead of the .notdef tofu box PIL would otherwise draw silently."""
+    x, y = xy
+    run, run_font = "", font
+
+    def flush():
+        if run:
+            draw.text((x, y), run, font=run_font, fill=fill, anchor="ls")
+
+    for ch in text:
+        chosen = cjk_font if ord(ch) not in _cmap(font_path) and ord(ch) in _cmap(cjk_font_path) \
+            else font
+        if chosen is not run_font:
+            flush()
+            x += run_font.getlength(run)
+            run = ""
+        run += ch
+        run_font = chosen
+    flush()
 
 
 def _format_clock(seconds: float) -> str:
