@@ -7,6 +7,7 @@ from aiohttp import web
 from .. import paths, settings as settings_module
 from ..artwork import content_type_of
 from ..media import hls
+from ..sources.device.receiver import list_devices
 from ..state import dumps
 
 IMMUTABLE = "public, max-age=31536000, immutable"
@@ -69,6 +70,9 @@ def build_app(hub, deps, artwork, settings, pipeline, tunnel, sources, dj,
     async def deps_refresh(_request):
         await deps.ensure_all()
         return web.Response()
+
+    async def devices(_request):
+        return _json(list_devices())
 
     async def player(request):
         command = request.match_info["command"]
@@ -146,6 +150,7 @@ def build_app(hub, deps, artwork, settings, pipeline, tunnel, sources, dj,
     app.router.add_post("/api/tunnel/start", tunnel_start)
     app.router.add_post("/api/tunnel/stop", tunnel_stop)
     app.router.add_post("/api/deps/refresh", deps_refresh)
+    app.router.add_get("/api/devices", devices)
     app.router.add_post("/api/player/{command}", player)
     app.router.add_post("/api/dj/request", dj_request)
     app.router.add_post("/api/dj/search", dj_search)

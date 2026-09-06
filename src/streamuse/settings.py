@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass, fields
 
 from . import paths
 
-SOURCES = ("apple", "spotify")
+SOURCES = ("apple", "spotify", "device")
 TUNNEL_MODES = ("Quick", "Named")
 THEMES = ("Auto", "Dark", "Light")
 
@@ -44,6 +44,11 @@ class Settings:
     djCrossfadeSeconds: float = 8.0
     djSfxEnabled: bool = True
 
+    #: A WASAPI loopback device name for the "device" source. Empty means none picked yet - unlike
+    #: receiverName/spotifyConnectDeviceName this has no fallback default, since an empty value is a
+    #: real, distinct state (DeviceReceiver.available reports it as "pick one in Settings first").
+    deviceCaptureName: str = ""
+
     def normalized(self) -> "Settings":
         """Clamps anything a hand-edited file (or a stale schema) could have made invalid."""
         self.source = self.source if self.source in SOURCES else "apple"
@@ -58,6 +63,7 @@ class Settings:
         self.tunnelMode = self.tunnelMode if self.tunnelMode in TUNNEL_MODES else "Quick"
         self.theme = self.theme if self.theme in THEMES else "Auto"
         self.djCrossfadeSeconds = _clamp_float(self.djCrossfadeSeconds, 2.0, 30.0)
+        self.deviceCaptureName = (self.deviceCaptureName or "").strip()[:255]
         return self
 
     def apply(self, other: "Settings") -> None:

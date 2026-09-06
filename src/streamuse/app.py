@@ -18,6 +18,7 @@ from .media import hls
 from .media.pipeline import StreamPipeline
 from .sources import SAMPLE_RATE, SourceManager
 from .sources.airplay.receiver import AirPlayReceiver
+from .sources.device.receiver import DeviceReceiver
 from .sources.spotify.receiver import SpotifyReceiver
 from .state import StateHub
 from .tunnel import CloudflaredTunnel
@@ -68,6 +69,7 @@ def build(hub, settings, control_port: int, public_port: int):
     sources = SourceManager(settings, hub, artwork, pipeline.push_audio, {
         "apple": AirPlayReceiver(settings, hub, artwork),
         "spotify": SpotifyReceiver(settings, hub, artwork, deps),
+        "device": DeviceReceiver(settings, hub),
     })
     dj = DjMixer(settings, hub, deps, sources, SAMPLE_RATE)
     pipeline.set_dj(dj)
@@ -101,7 +103,7 @@ def pick_port(preferred: int) -> int:
 def main() -> None:
     _use_utf8()
     parser = argparse.ArgumentParser(prog="streamuse")
-    parser.add_argument("--test-receiver", choices=("apple", "spotify"),
+    parser.add_argument("--test-receiver", choices=("apple", "spotify", "device"),
                         help="run one receiver alone and report what it delivers")
     parser.add_argument("seconds", nargs="?", type=int, default=30)
     arguments = parser.parse_args()

@@ -46,14 +46,6 @@ uv run pyinstaller streamuse.spec --noconfirm  # dist/StreaMuse.exe
 the spec adds it explicitly and `paths.wwwroot()` resolves it identically from a checkout and from the
 unpacked bundle; editing the panel needs no rebuild when running from source.
 
-**The exe ships ffmpeg, cloudflared and go-librespot inside it**, so a download of it works offline
-and on first launch - which is the point, and why the release build must not silently produce an exe
-without them. CI stages the three into `vendor/bin` (gitignored) and *fails* if any is missing; the
-spec adds whatever is staged as `datas` under `bin/`, and `paths.bundled_bin()` is the first place
-`deps.resolve` looks. A local `pyinstaller` run with nothing staged still builds - the result just
-falls back to downloading, which is what a source checkout does anyway. go-librespot has no
-downloadable build at all, so CI builds it: see the `librespot` job and `vendor/go-librespot/`.
-
 There is **no test project**. Verification is done by running the app and checking real behaviour.
 Useful techniques used in practice:
 
@@ -172,10 +164,6 @@ panel still receives the version as a number: nothing validates it there.
   aborting the writers and closing the servers under them. The wait is bounded.
 - The receiver is *not* part of the session. It runs whenever selected and `push_audio` drops what it
   delivers while no session exists, so selecting a source and starting a stream stay independent.
-- `app._prepare` starts the receiver **before** `deps.ensure_all`. The receiver needs none of the
-  downloads, and behind ~135 MB of them a first launch offers Apple Music no speaker to pick for
-  minutes - which reads as the app being broken. ffmpeg and cloudflared are wanted later, by the
-  stream and tunnel buttons, and both report their own absence.
 
 **AirPlay**
 - Apple Music and iTunes for Windows speak **AirPlay 1 (RAOP) only** - confirmed by shairport-sync's
@@ -198,13 +186,6 @@ panel still receives the version as a number: nothing validates it there.
 - ffmpeg's ALAC decoder needs the **36-byte `alac` atom**, not the bare 24-byte body the SDP fmtp
   describes. `alac.magic_cookie` rebuilds it, and its output is byte-identical to what ffmpeg writes
   for its own ALAC files - which is how it was verified.
-- **A decoded plane is longer than the samples it holds.** ffmpeg allocates audio buffers with
-  alignment padding, so `bytes(frame.planes[0])` returns 128 bytes more than
-  `samples * 4` and every one of those bytes is zero. Sending the whole buffer appends silence to
-  every packet: 0.8 % on the 4096-frame packets a test file produces, and **9 % on the 352-frame
-  packets AirPlay actually sends**, which is both an audible buzz at the packet rate and a 9 %
-  overrun the pacer then sheds continuously. Always cut a plane to `frame.samples`. The receiver's
-  output is bit-exact against a reference decode, and that comparison is the test that catches this.
 - The TXT record offers uncompressed audio as well (`cn=0,1`), so `PcmDecoder` has to exist; a sender
   that takes it would otherwise crash the session on an ALAC decoder it never announced.
 - A failed ANNOUNCE must release the session. Otherwise the connection stays the owner and the SETUP
@@ -219,11 +200,6 @@ panel still receives the version as a number: nothing validates it there.
   system default device with no way to select another. `vendor/go-librespot/` holds the one-file patch
   that implements the pipe there and the steps to build it; until that binary exists the Spotify
   source reports itself unavailable and Apple Music is unaffected.
-- **`go-librespot.exe` is resolved, never downloaded.** No release carries the patch, so a URL for it
-  is a URL that 404s - which it did, on every launch, as a red error in the log of everyone using
-  Apple Music. The exe carries a build made by CI; from source it is whatever the user built.
-  `DependencyManager.go_librespot` is a property over `resolve`, which also means a binary dropped
-  into `BIN_DIR` needs no restart. Restore a download only against an asset that exists.
 - The named pipe instance must exist **before** the daemon starts, because go-librespot is the client
   and its open fails outright when nothing is listening.
 - go-librespot closes the pipe on stop and on playback moving to another device, and reopens it on the
@@ -231,26 +207,48 @@ panel still receives the version as a number: nothing validates it there.
   fills the gaps and never learns anything happened. Never close the pipe while streaming should
   continue - a write error makes the daemon emit `stopped` and stay stopped until the user presses
   play.
-- **The pipe reader has to pace its own drain to real time.** go-librespot's pipe output has no pacing
-  of its own - `Write()` blocking on a full buffer is its only throttle, the role a real device's
-  small hardware buffer plays on Unix. Draining as fast as bytes arrive removes that backpressure:
-  go-librespot decodes and writes an entire track in a few CPU-bound seconds, then considers it
-  finished and skips to the next one. `PipeReader._read` holds its drain at `SAMPLE_RATE` with
-  `LEAD_SECONDS` of allowed slack, and caps catch-up (`MAX_CATCH_UP_SECONDS`) so a moment this thread
-  doesn't get scheduled - go-librespot keeps writing regardless - doesn't flush as a burst once it
-  resumes; `AudioPacer` already fills a gap like that with silence, the same as a paused source.
-- **`BUFFER_SIZE`, the pipe's kernel buffer, has to stay small.** Sized for several seconds, it let
-  go-librespot dump that much pre-buffered audio in almost instantly on connect - and since its
-  position tracking advances with every `Write()` regardless of whether this reader has actually
-  forwarded the audio yet, that showed up as a fixed multi-second gap between what the panel reports
-  playing and what the stream is actually playing, present from the first sample of every track.
-  Sized close to what a real hardware buffer would hold instead, `Write()` blocks almost immediately,
-  so go-librespot can never get more than a fraction of a second ahead of what has actually reached
-  `AudioPacer`.
 - `external_volume: true` keeps the broadcast at full scale; Spotify's slider is the listener's
   business, not ours. The AirPlay side ignores its `volume:` messages for the same reason.
 - Password login is gone from Spotify. Credentials arrive by the desktop app handing off over
   zeroconf, and are persisted so later runs need no re-pick.
+
+**Playback Device**
+- This source identifies no app at all - it's WASAPI loopback on a Windows playback device the user
+  picks, for routing something with no receiver of its own (a virtual cable, or an app's own output
+  device) into the stream. No title, artist, artwork or transport control exist at the device level,
+  so `track()` always returns an empty `TrackState` - never a placeholder like "Live audio", per the
+  rule below that nothing on the wire carries one.
+- Loopback taps the audio engine's already-mixed stream, so DRM is a non-issue here: whatever plays
+  through Windows' normal audio stack is already decrypted PCM by the time it reaches this tap. This
+  is also why it works for apps a receiver protocol never could (see `--test-receiver device`).
+- A loopback device delivers **nothing at all**, not silence, while its render endpoint is idle -
+  unlike a real hardware output, which keeps rendering a mixed silence. `stream.read()` on an idle
+  virtual cable can go long stretches without producing a frame. This is not a bug to route around:
+  the pacer's own silence-fill already covers exactly this case, the same as a paused AirPlay/Spotify
+  sender.
+- **The one place in the app that resamples in Python.** Every other source already delivers 44.1kHz
+  s16le - that guarantee comes from the wire protocol itself (RAOP, go-librespot), which is exactly
+  what "never resample, the pacer counts frames of the source rate against wall clock" is protecting.
+  A loopback device carries no equivalent guarantee: it runs at whatever the audio engine actually
+  negotiated (commonly 48kHz), and unlike a real capture device, loopback isn't reliably able to
+  renegotiate to an arbitrary format on request - confirmed by testing a real device on this machine,
+  which reported 48kHz regardless. `sources/device/receiver.py` captures at the device's own native
+  rate/channel count and converts to 44.1kHz s16le stereo itself (`_Resampler`, a persistent
+  linear-interpolation resampler that carries its fractional phase across `stream.read()` calls - a
+  fresh interpolation per chunk would click at every chunk boundary) before anything downstream ever
+  sees it, so the pacer's own assumption still holds everywhere else.
+- **PyAudioWPatch**, not raw `ctypes`, despite `jobs.py` already establishing a no-`comtypes`
+  convention elsewhere in this codebase. That precedent is two flat `WinDLL` calls with a struct;
+  WASAPI loopback needs real COM interfaces (`IMMDeviceEnumerator`, `IAudioClient`,
+  `IAudioCaptureClient`) with vtables and `QueryInterface`, which is a different order of complexity
+  hand-rolled `ctypes` was never exercised against. PyAudioWPatch is a PortAudio fork built
+  specifically for this and ships a `cp314-win_amd64` wheel.
+- A device is persisted by **name**, not index - WASAPI device indices shift when devices are
+  plugged/unplugged, and PyAudioWPatch's device info exposes no more stable identifier than the
+  name, so this is the same tradeoff `receiverName`/`spotifyConnectDeviceName` already accept.
+- Changing the configured device while "device" is already the selected source does not restart
+  capture - consistent with existing behavior (`save_settings` only calls `sources.select()` when
+  `settings.source` itself changes), not something new to solve here.
 
 **Serialization and background tasks**
 - Never put a non-finite `float` into anything serialized. `state.dumps` passes `allow_nan=False`, so
@@ -315,11 +313,10 @@ details drawer opens.
 
 ## Not yet verified
 
-The **Spotify** path has never run end to end. Everything up to the binary - the config, the process
-wrapper, the named pipe reader, the API client - is written, and the pipe reader is verified against
-synthetic writers including reconnect cycles. The `librespot` CI job that produces the binary is
-lifted from upstream's own working Windows job, but it has not been run: the first release build is
-what proves it compiles, and the first play through it is what proves the patch works.
+The **Spotify** path has never run end to end: it needs the patched go-librespot binary described in
+`vendor/go-librespot/README.md`, and no release carries it yet. Everything up to that binary - the
+config, the process wrapper, the named pipe reader, the API client - is written and the pipe reader
+is verified against synthetic writers, including reconnect cycles.
 
 The **AirPlay** path is verified end to end against a synthetic RAOP sender that performs the real
 handshake and streams real AES-encrypted ALAC: challenge signing, key unwrap, SETUP, RECORD, DMAP
@@ -328,6 +325,19 @@ Apple Music itself; the service is confirmed discoverable over mDNS on the devel
 whether Apple Music for Windows lists it, and whether it advertises `_dacp._tcp` so the transport
 buttons work, are unconfirmed. The panel keeps working without DACP - only the transport buttons go
 quiet.
+
+The **Playback Device** source is verified piecewise, not against real content end to end. Confirmed
+on the development machine: device/loopback enumeration finds a real virtual cable, `start`/`stop`/
+`available`/`connected` behave correctly against it via `--test-receiver device`, and - checked in
+isolation with a synthetic tone through `_Resampler` directly, not through a live capture - the
+resample carries exact frame counts (no drift) and no chunk-boundary discontinuity beyond what a
+smooth waveform's own slew rate accounts for. What is **not** yet confirmed: the exact output pitch
+of real audio captured live and resampled end to end - an attempt to verify this by also generating a
+test tone through the same virtual cable's playback side hit unrelated WASAPI shared-mode output
+timing issues in the test harness itself (a near-silent, wrong-frequency capture even before the
+resampler saw the audio), which point at the harness rather than `_Resampler` given the isolated test
+already confirmed it exactly preserves frequency, but this was not run to ground. Route a real app's
+output to a real device and listen to the resulting stream before trusting pitch on real content.
 
 The pipeline, both web surfaces, the tunnel, the frozen exe and the panel have been verified by
 running them.

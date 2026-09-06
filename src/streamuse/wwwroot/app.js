@@ -1,7 +1,7 @@
 'use strict';
 
 const METER_BARS = 34;
-const SOURCE_LABELS = { apple: 'Apple Music', spotify: 'Spotify' };
+const SOURCE_LABELS = { apple: 'Apple Music', spotify: 'Spotify', device: 'Playback Device' };
 const THEMES = ['Auto', 'Dark', 'Light'];
 
 const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
@@ -219,6 +219,32 @@ function renderSourceOptions(view) {
     radio.disabled = !available;
     radio.checked = radio.value === state.source.source;
   }
+
+  const onDevice = state.source.source === 'device';
+  document.getElementById('device-picker').hidden = !onDevice;
+  if (onDevice && !deviceOptionsLoaded) populateDeviceOptions();
+}
+
+let deviceOptionsLoaded = false;
+
+async function populateDeviceOptions() {
+  // Set first, not after: a fetch failure must not retry on every render tick.
+  deviceOptionsLoaded = true;
+  const select = document.getElementById('set-device');
+
+  try {
+    const response = await fetch('/api/devices');
+    const names = await response.json();
+
+    select.replaceChildren(...names.map(name => {
+      const option = document.createElement('option');
+      option.value = name;
+      option.textContent = name;
+      return option;
+    }));
+
+    select.value = settings.deviceCaptureName;
+  } catch { /* left empty - the field itself still shows unavailable via renderSourceOptions */ }
 }
 
 function renderCover() {
@@ -467,6 +493,10 @@ for (const radio of document.querySelectorAll('[data-source]')) {
     if (radio.checked) saveSettings({ source: radio.value });
   });
 }
+
+document.getElementById('set-device').addEventListener('change', event => {
+  saveSettings({ deviceCaptureName: event.target.value });
+});
 
 for (const button of document.querySelectorAll('[data-player]')) {
   button.addEventListener('click', () => post('/api/player/' + button.dataset.player));

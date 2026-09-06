@@ -14,7 +14,7 @@ SAMPLE_RATE = 44100
 
 PUBLISH_INTERVAL = 1.0
 
-LABELS = {"apple": "Apple Music", "spotify": "Spotify"}
+LABELS = {"apple": "Apple Music", "spotify": "Spotify", "device": "Playback Device"}
 
 
 class TrackState:

@@ -295,6 +295,11 @@ body {
   background: transparent;
 }
 
+.seg-opt-icon {
+  flex: none;
+  padding: 7px 10px;
+}
+
 .target-row {
   display: flex;
   align-items: center;
