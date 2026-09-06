@@ -45,7 +45,8 @@ class DependencyManager:
         self.yt_dlp: str | None = None
 
     async def ensure_all(self) -> None:
-        """Resolves every tool, downloading anything missing. Safe to call repeatedly."""
+        """Resolves ffmpeg, cloudflared, go-librespot and yt-dlp, downloading anything missing. Safe
+        to call repeatedly."""
         async with self._gate:
             paths.BIN_DIR.mkdir(parents=True, exist_ok=True)
             self.ffmpeg = await self._ensure_ffmpeg()
@@ -53,12 +54,15 @@ class DependencyManager:
             self.go_librespot = await self._ensure_go_librespot()
             self.yt_dlp = await self._ensure_single("yt-dlp.exe", YT_DLP_URL, "yt-dlp")
 
-            self._hub.set_dependencies([
-                DependencyView("ffmpeg", self.ffmpeg),
-                DependencyView("cloudflared", self.cloudflared),
-                DependencyView("go-librespot", self.go_librespot),
-                DependencyView("yt-dlp", self.yt_dlp),
-            ])
+            self._publish()
+
+    def _publish(self) -> None:
+        self._hub.set_dependencies([
+            DependencyView("ffmpeg", self.ffmpeg),
+            DependencyView("cloudflared", self.cloudflared),
+            DependencyView("go-librespot", self.go_librespot),
+            DependencyView("yt-dlp", self.yt_dlp),
+        ])
 
     async def _ensure_ffmpeg(self) -> str | None:
         existing = resolve("ffmpeg.exe")

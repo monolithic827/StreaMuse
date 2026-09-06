@@ -17,8 +17,13 @@ class Settings:
     #: Path component of the public playlist: /live/{streamKey}/index.m3u8.
     streamKey: str = "parlour"
 
-    #: The name Apple Music and Spotify show in their device pickers.
+    #: What Apple Music shows in its AirPlay device picker.
     receiverName: str = "StreaMuse"
+
+    #: What Spotify shows in its Connect device picker - kept separate from receiverName since a
+    #: phone's Connect list and Apple Music's AirPlay list are different audiences a user may
+    #: reasonably want labelled differently.
+    spotifyConnectDeviceName: str = "StreaMuse"
 
     width: int = 1280
     height: int = 720
@@ -36,7 +41,6 @@ class Settings:
     logExpanded: bool = False
     theme: str = "Auto"
 
-    djEnabled: bool = False
     djCrossfadeSeconds: float = 8.0
     djSfxEnabled: bool = True
 
@@ -45,6 +49,7 @@ class Settings:
         self.source = self.source if self.source in SOURCES else "apple"
         self.streamKey = _sanitize_key(self.streamKey)
         self.receiverName = (self.receiverName or "").strip()[:63] or "StreaMuse"
+        self.spotifyConnectDeviceName = (self.spotifyConnectDeviceName or "").strip()[:63] or "StreaMuse"
         self.width = _clamp(_even_up(self.width), 256, 3840)
         self.height = _clamp(_even_up(self.height), 256, 2160)
         self.fps = _clamp(self.fps, 1, 30)
@@ -52,7 +57,7 @@ class Settings:
         self.audioBitrateKbps = _clamp(self.audioBitrateKbps, 64, 512)
         self.tunnelMode = self.tunnelMode if self.tunnelMode in TUNNEL_MODES else "Quick"
         self.theme = self.theme if self.theme in THEMES else "Auto"
-        self.djCrossfadeSeconds = _clamp_float(self.djCrossfadeSeconds, 2.0, 20.0)
+        self.djCrossfadeSeconds = _clamp_float(self.djCrossfadeSeconds, 2.0, 30.0)
         return self
 
     def apply(self, other: "Settings") -> None:

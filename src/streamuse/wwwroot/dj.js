@@ -39,19 +39,6 @@ function render(dj) {
   const tag = document.getElementById('dj-tag');
   const skip = document.getElementById('dj-skip');
 
-  if (!dj) {
-    title.textContent = 'DJ mixing is off';
-    artist.textContent = '';
-    status.textContent = 'Turn it on in Settings.';
-    tag.textContent = 'off';
-    skip.disabled = true;
-    positionAnchor = { seconds: 0, atMs: 0, duration: 0, playing: false };
-    renderArt(0);
-    renderProgress();
-    renderQueue([]);
-    return;
-  }
-
   const playing = dj.nowMixing;
   title.textContent = playing ? playing.title : 'Nothing playing';
   artist.textContent = playing ? [playing.artist, dj.album].filter(Boolean).join(' · ') : '';

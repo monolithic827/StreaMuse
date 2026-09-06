@@ -116,8 +116,7 @@ function buildView() {
     uptimeLabel: 'up ' + clock(encoder.uptimeSeconds),
 
     running: running,
-    connected: connected,
-    djEnabled: settings.djEnabled
+    connected: connected
   };
 }
 
@@ -357,6 +356,7 @@ function openSettings() {
 
 function fillSettings() {
   document.getElementById('set-name').value = settings.receiverName;
+  document.getElementById('set-spotify-name').value = settings.spotifyConnectDeviceName;
   document.getElementById('set-key').value = settings.streamKey;
   document.getElementById('set-vbr').value = settings.videoBitrateKbps;
   document.getElementById('set-abr').value = settings.audioBitrateKbps;
@@ -365,7 +365,6 @@ function fillSettings() {
   document.getElementById('set-token').value = settings.namedTunnelToken;
   document.getElementById('set-host').value = settings.namedTunnelHostname;
   document.getElementById('set-autotunnel').checked = settings.autoTunnel;
-  document.getElementById('set-dj-enabled').checked = settings.djEnabled;
   document.getElementById('set-dj-crossfade').value = settings.djCrossfadeSeconds;
   document.getElementById('set-dj-sfx').checked = settings.djSfxEnabled;
 
@@ -394,6 +393,7 @@ function readSettings() {
 
   return {
     receiverName: document.getElementById('set-name').value.trim(),
+    spotifyConnectDeviceName: document.getElementById('set-spotify-name').value.trim() || 'StreaMuse',
     streamKey: document.getElementById('set-key').value.trim(),
     width: width,
     height: height,
@@ -405,7 +405,6 @@ function readSettings() {
     namedTunnelToken: document.getElementById('set-token').value.trim(),
     namedTunnelHostname: document.getElementById('set-host').value.trim(),
     autoTunnel: document.getElementById('set-autotunnel').checked,
-    djEnabled: document.getElementById('set-dj-enabled').checked,
     djCrossfadeSeconds: Number(document.getElementById('set-dj-crossfade').value),
     djSfxEnabled: document.getElementById('set-dj-sfx').checked
   };
@@ -445,9 +444,6 @@ for (const id of ['set-vbr', 'set-abr', 'set-fps', 'set-dj-crossfade']) {
   document.getElementById(id).addEventListener('input', syncSettingLabels);
 }
 
-// The main panel only needs to know whether the addon is enabled, to show the button that opens
-// the DJ window - it keeps no DJ state of its own.
-//
 // window.pywebview.api starts as {} and is only populated with real methods once pywebview
 // dispatches "pywebviewready" - calling open_dj() before that fires calls a plain object property,
 // throwing "open_dj is not a function" instead of doing anything.

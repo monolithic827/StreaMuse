@@ -68,7 +68,7 @@ class SpotifyReceiver(Receiver):
             raise RuntimeError("go-librespot is not installed")
 
         self._sink = sink
-        self._name = self._settings.receiverName
+        self._name = self._settings.spotifyConnectDeviceName
 
         # The pipe instance must exist before the daemon tries to open it.
         self._pipe = PipeReader(asyncio.get_running_loop(), self._deliver, self._hub)

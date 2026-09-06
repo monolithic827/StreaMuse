@@ -29,8 +29,7 @@
         <path d="M12 2v2m0 16v2M4.9 4.9l1.5 1.5m11.2 11.2 1.5 1.5M2 12h2m16 0h2M4.9 19.1l1.5-1.5M17.6 6.4l1.5-1.5" />
       </svg>
     </button>
-    <button class="btn btn-icon btn-secondary" id="btn-dj" aria-label="Open DJ" title="Open DJ"
-      data-bind-show="djEnabled">
+    <button class="btn btn-icon btn-secondary" id="btn-dj" aria-label="Open DJ" title="Open DJ">
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <circle cx="8" cy="16" r="3" /><circle cx="18" cy="14" r="3" />
         <path d="M11 16V5l10-2v11" />
@@ -183,9 +182,15 @@
       </div>
 
       <div class="dialog-body settings-body">
-        <div class="field">
-          <label for="set-name">Receiver name - what Apple Music and Spotify list</label>
-          <input class="input" id="set-name" maxlength="63">
+        <div class="grid2">
+          <div class="field">
+            <label for="set-name">AirPlay name - what Apple Music lists</label>
+            <input class="input" id="set-name" maxlength="63">
+          </div>
+          <div class="field">
+            <label for="set-spotify-name">Spotify Connect device name</label>
+            <input class="input" id="set-spotify-name" placeholder="StreaMuse" maxlength="63">
+          </div>
         </div>
 
         <div class="field">
@@ -253,21 +258,17 @@
 
         <hr class="hr">
 
-        <div class="field">
-          <label>DJ mixer</label>
-          <label class="radio"><input type="checkbox" id="set-dj-enabled"><span class="dot"></span>Let viewers
-            request songs to mix into the stream</label>
-        </div>
-
         <div class="grid2">
           <div class="field">
-            <label>Crossfade length - <span id="lbl-dj-crossfade">8s</span></label>
-            <input class="input range" type="range" id="set-dj-crossfade" min="2" max="20" step="1">
+            <label>DJ crossfade length - <span id="lbl-dj-crossfade">8s</span></label>
+            <input class="input range" type="range" id="set-dj-crossfade" min="2" max="30" step="1">
           </div>
           <div class="field">
             <label>Sound effects</label>
             <label class="radio"><input type="checkbox" id="set-dj-sfx"><span class="dot"></span>Occasional drop-in
               accents</label>
+            <p class="micro">Picks at random from files dropped into the dj-sfx folder in StreaMuse's data
+              directory.</p>
           </div>
         </div>
 

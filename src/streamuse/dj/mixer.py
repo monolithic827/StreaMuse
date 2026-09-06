@@ -131,9 +131,6 @@ class DjMixer:
     # ---- requests -----------------------------------------------------------
 
     def request(self, query: str) -> tuple[bool, str, state_module.DjQueueEntry | None]:
-        if not self._settings.djEnabled:
-            return False, "DJ mixing is turned off in Settings", None
-
         query = query.strip()
         if not query:
             return False, "empty request", None
@@ -578,7 +575,7 @@ class DjMixer:
     def observe_live(self, chunk: bytes) -> None:
         """Feeds the rolling live-grid analysis. Called from push_audio, which can run on a receiver
         thread as well as the loop."""
-        if not chunk or not self._settings.djEnabled:
+        if not chunk:
             return
         stereo = pcm.s16le_to_float32(chunk)
         with self._lock:
@@ -667,7 +664,7 @@ class DjMixer:
                if self._beatmatched else f"mixing in \"{playing.title}\"")
 
     def _publish(self) -> None:
-        self._hub.set_dj(self.snapshot() if self._settings.djEnabled else None)
+        self._hub.set_dj(self.snapshot())
 
 
 def _version_of(artwork: bytes | None) -> int:
