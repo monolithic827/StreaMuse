@@ -251,12 +251,15 @@ panel still receives the version as a number: nothing validates it there.
   business, not ours. The AirPlay side ignores its `volume:` messages for the same reason.
 - Password login is gone from Spotify. Credentials arrive by the desktop app handing off over
   zeroconf, and are persisted so later runs need no re-pick.
-- **Its Windows build also drags in four MSYS2 DLLs** - `libmpg123-0`, `libFLAC`, `libvorbisenc-2`,
-  `libvorbis-0` - because CGO links them dynamically; only `libogg` was forced static (see the
-  `librespot` job's own comment for why). A machine without MSYS2 got Windows' bare "DLL was not
-  found" dialog, four times over, never mentioning go-librespot. CI now stages and bundles all four
-  the same way as the exe itself; `deps.py` also downloads them from this repo's own release if a
-  machine still finds them missing. They land in `BIN_DIR` rather than next to the exe, because the
+- **Its Windows build also drags in six MSYS2 DLLs** - `libmpg123-0`, `libFLAC`, `libvorbisenc-2`,
+  `libvorbis-0`, `libogg-0`, `libwinpthread-1` - because CGO links them dynamically. A machine
+  without MSYS2 got Windows' bare "DLL was not found" dialog, never mentioning go-librespot. Ship
+  the whole closure, not just what `go-librespot.exe` itself imports: forcing `libogg` static (see
+  the `librespot` job's own comment for why) only settles go-librespot's own link, and the prebuilt
+  `libFLAC` and `libvorbis-0` still import the shared `libogg-0`, `libFLAC` also `libwinpthread-1`.
+  Check by dumping the import table of each staged DLL rather than trusting the exe's. CI stages and
+  bundles all six the same way as the exe itself; `deps.py` also downloads them from this repo's
+  own release if a machine still finds them missing. They land in `BIN_DIR` rather than next to the exe, because the
   exe can be running out of a onefile temp extraction that is gone by the next launch while
   `BIN_DIR` survives - so `LibrespotProcess` puts `BIN_DIR` on the child's `PATH` instead of relying
   on the exe's own directory.

@@ -30,7 +30,14 @@ GO_LIBRESPOT_LIBS_URL = (
 )
 
 #: go-librespot's dynamically-linked audio libraries - see CLAUDE.md's Spotify section.
-GO_LIBRESPOT_LIBS = ("libmpg123-0.dll", "libFLAC.dll", "libvorbisenc-2.dll", "libvorbis-0.dll")
+GO_LIBRESPOT_LIBS = (
+    "libmpg123-0.dll",
+    "libFLAC.dll",
+    "libvorbisenc-2.dll",
+    "libvorbis-0.dll",
+    "libogg-0.dll",
+    "libwinpthread-1.dll",
+)
 
 USER_AGENT = "StreaMuse/1.0"
 
