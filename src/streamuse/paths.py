@@ -1,6 +1,7 @@
 """Well-known directories. Config is roaming, binaries and HLS output are machine-local."""
 
 import os
+import sys
 from pathlib import Path
 
 CONFIG_DIR = Path(os.environ["APPDATA"]) / "StreaMuse"
@@ -16,6 +17,13 @@ SETTINGS_PATH = CONFIG_DIR / "settings.json"
 def wwwroot() -> Path:
     """The panel and listener assets, whether running from source or from a frozen bundle."""
     return Path(__file__).parent / "wwwroot"
+
+
+def bundled_bin() -> Path | None:
+    """ffmpeg, cloudflared and go-librespot as shipped inside the exe, or None in a source
+    checkout - where `deps` downloads the first two and the third is built by hand."""
+    unpacked = getattr(sys, "_MEIPASS", None)
+    return Path(unpacked) / "bin" if unpacked else None
 
 
 def ensure() -> None:

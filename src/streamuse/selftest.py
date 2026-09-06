@@ -25,9 +25,6 @@ async def run_receiver_test(source: str, seconds: int) -> None:
     artwork = ArtworkStore()
 
     deps = DependencyManager(hub)
-    if source == "spotify":
-        await deps.ensure_all()
-
     receiver = _build(source, settings, hub, artwork, deps)
     if not receiver.available:
         print(f"\n{source} is unavailable: {receiver.reason}")
@@ -47,10 +44,13 @@ async def run_receiver_test(source: str, seconds: int) -> None:
                   f"| {len(captured) // 4:>8} frames | {track.title[:40] or '-'}")
     finally:
         elapsed = time.monotonic() - started
-        track = receiver.track()
+        # Read the fields out before stopping: the receiver clears the track it hands back.
+        track = receiver.track().snapshot(artwork.version)
+        client = receiver.client
+        cover = artwork.bytes
         await receiver.stop()
 
-    _report(captured, elapsed, track, receiver, artwork)
+    _report(captured, elapsed, track, client, cover)
 
 
 def _build(source: str, settings, hub, artwork, deps):
@@ -62,15 +62,14 @@ def _build(source: str, settings, hub, artwork, deps):
     return SpotifyReceiver(settings, hub, artwork, deps)
 
 
-def _report(captured: bytearray, elapsed: float, track, receiver, artwork) -> None:
+def _report(captured: bytearray, elapsed: float, track, client: str, cover) -> None:
     frames = len(captured) // 4
     print("\n" + "-" * 64)
-    print(f"client          {receiver.client or 'nothing connected'}")
+    print(f"client          {client or 'nothing connected'}")
     print(f"track           {track.title or '-'} / {track.artist or '-'} / {track.album or '-'}")
-    print(f"duration        {track.duration:.1f}s, position {track.position:.1f}s")
+    print(f"duration        {track.durationSeconds:.1f}s, position {track.positionSeconds:.1f}s")
 
-    data = artwork.bytes
-    print(f"artwork         {len(data)} bytes, {content_type_of(data)}" if data else
+    print(f"artwork         {len(cover)} bytes, {content_type_of(cover)}" if cover else
           "artwork         none received")
 
     if not frames:

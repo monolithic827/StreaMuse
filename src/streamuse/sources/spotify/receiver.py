@@ -42,7 +42,7 @@ class SpotifyReceiver(Receiver):
 
     @property
     def reason(self) -> str:
-        return "" if self.available else "go-librespot is not installed"
+        return "" if self.available else "go-librespot is not installed - see the README"
 
     @property
     def connected(self) -> bool:

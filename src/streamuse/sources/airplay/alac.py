@@ -13,6 +13,9 @@ import av
 #: fmtp fields after the payload type, in the order the sender lists them.
 COOKIE_FORMAT = ">IBBBBBBHIII"
 
+#: s16le stereo, what the decoder is asked to pack to.
+BYTES_PER_FRAME = 4
+
 
 def magic_cookie(fmtp: list[int]) -> bytes:
     """frameLength, compatibleVersion, bitDepth, pb, mb, kb, channels, maxRun, maxFrameBytes,
@@ -32,7 +35,11 @@ class AlacDecoder:
         chunks = []
         for decoded in self._context.decode(av.Packet(frame)):
             for packed in self._packer.resample(decoded):
-                chunks.append(bytes(packed.planes[0]))
+                # A plane is allocated with alignment padding past the samples it holds, so it has
+                # to be cut to the frame's own length. Sending the whole buffer appends 128 bytes
+                # of silence to every packet - inaudible on long frames, a 9% overrun and a buzz at
+                # the packet rate on the 352-frame packets AirPlay actually sends.
+                chunks.append(bytes(packed.planes[0])[:packed.samples * BYTES_PER_FRAME])
         return b"".join(chunks)
 
     def flush(self) -> None:
