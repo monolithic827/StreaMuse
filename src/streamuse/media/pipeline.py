@@ -43,7 +43,6 @@ class StreamPipeline:
         self._deps = deps
         self._artwork = artwork
         self._tunnel = tunnel
-        self._dj = None
 
         self._gate = asyncio.Lock()
         self._clock = Clock()
@@ -56,10 +55,6 @@ class StreamPipeline:
     @property
     def running(self) -> bool:
         return self._session is not None
-
-    def set_dj(self, dj) -> None:
-        self._dj = dj
-        self._pacer.set_mixer(dj)
 
     def push_audio(self, chunk: bytes) -> None:
         """The sink every receiver feeds. Dropped while no session exists, so a receiver's lifetime
@@ -124,7 +119,7 @@ class StreamPipeline:
         self._pacer.reset()
         self._clock.restart()
 
-        renderer = CoverFrameRenderer(self._settings, self._artwork, self._hub, self._dj)
+        renderer = CoverFrameRenderer(self._settings, self._artwork, self._hub)
         video_pacer = VideoPacer(renderer)
 
         session.tasks = [
