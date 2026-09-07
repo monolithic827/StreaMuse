@@ -8,9 +8,9 @@ source.
 
 import time
 
-from .. import Receiver, TrackState
+from .. import Receiver, RequestTrack, TrackState
 from ...artwork import content_type_of
-from . import dmap
+from . import dmap, itunes
 from .alac import AlacDecoder, PcmDecoder
 from .dacp import DacpClient
 from .mdns import RaopAdvertisement, hardware_address
@@ -29,6 +29,9 @@ SILENCE_TIMEOUT = 1.0
 
 class AirPlayReceiver(Receiver):
     source = "apple"
+
+    #: Nothing here can reach Apple Music's queue, so a request goes to the host - see itunes.py.
+    request_action = "ask"
 
     def __init__(self, settings, hub, artwork) -> None:
         self._settings = settings
@@ -110,6 +113,19 @@ class AirPlayReceiver(Receiver):
         advertisement = self._advertisement
         return await self._dacp.send(command, advertisement.zeroconf if advertisement else None)
 
+    async def search(self, query: str) -> RequestTrack | None:
+        return await itunes.search(query, self._hub)
+
+    async def enqueue(self, track_id: str) -> bool:
+        track = await itunes.lookup(track_id, self._hub)
+        if track is None:
+            return False
+        self._hub.add_request(track)
+        return True
+
+    async def open_request(self, track_id: str) -> bool:
+        return itunes.open_in_app(track_id)
+
     # The RTSP server calls these as the sender drives the session.
 
     async def on_announce(self, session) -> None:
@@ -128,7 +144,7 @@ class AirPlayReceiver(Receiver):
         rate = session.fmtp[-1] if alac else 44100
 
         self._rtp = RtpSession(session.key, session.iv, decoder, frames, rate,
-                               self._deliver, self._hub)
+                               self._deliver, self._hub, session.address)
         return await self._rtp.start()
 
     async def on_record(self) -> None:

@@ -10,6 +10,10 @@ from datetime import datetime
 
 LOG_CAPACITY = 200
 
+#: Requests a host has not dealt with yet. Deep enough for a busy hour, shallow enough that the
+#: oldest falling off is the right answer rather than a loss.
+REQUEST_CAPACITY = 20
+
 IDLE, STARTING, RUNNING, ERROR = "idle", "starting", "running", "error"
 TUNNEL_OFF, TUNNEL_STARTING, TUNNEL_UP, TUNNEL_ERROR = "off", "starting", "up", "error"
 
@@ -19,6 +23,19 @@ class LogLine:
     time: str
     level: str
     message: str
+
+
+@dataclass(frozen=True)
+class Requested:
+    """A track a listener asked for that only the host can act on. Every field is resolved here
+    from the id, never taken from the listener, because the panel renders it."""
+
+    id: str
+    title: str
+    artist: str
+    album: str
+    artUrl: str
+    time: str
 
 
 @dataclass(frozen=True)
@@ -90,6 +107,7 @@ class StateHub:
         self.settings = settings
         self._lock = threading.Lock()
         self._log: deque[LogLine] = deque(maxlen=LOG_CAPACITY)
+        self._requests: deque[Requested] = deque(maxlen=REQUEST_CAPACITY)
         self._clients: set[asyncio.Queue] = set()
         self._loop: asyncio.AbstractEventLoop | None = None
 
@@ -147,6 +165,25 @@ class StateHub:
     def set_local_url(self, value: str | None) -> None:
         self._mutate("_local_url", value)
 
+    def add_request(self, track) -> None:
+        """A repeat is dropped rather than stacked: the per-address cooldown is no defence against
+        the same track arriving from a roomful of listeners."""
+        with self._lock:
+            if any(pending.id == track.id for pending in self._requests):
+                return
+            self._requests.appendleft(Requested(
+                track.id, track.title, track.artist, track.album, track.artUrl,
+                datetime.now().strftime("%H:%M")))
+
+        self._publish(self.snapshot())
+
+    def drop_request(self, track_id: str) -> None:
+        with self._lock:
+            self._requests = deque(
+                (r for r in self._requests if r.id != track_id), maxlen=REQUEST_CAPACITY)
+
+        self._publish(self.snapshot())
+
     def log(self, level: str, message: str) -> None:
         with self._lock:
             line = LogLine(datetime.now().strftime("%H:%M:%S"), level, message)
@@ -178,6 +215,7 @@ class StateHub:
                 "tunnel": asdict(self._tunnel),
                 "dependencies": [_dependency_dict(d) for d in self._deps],
                 "log": [asdict(line) for line in self._log],
+                "requests": [asdict(pending) for pending in self._requests],
                 "localUrl": self._local_url,
                 "settings": self.settings.to_dict(),
             }

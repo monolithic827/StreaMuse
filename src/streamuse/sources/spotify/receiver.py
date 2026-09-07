@@ -5,9 +5,10 @@ its PCM off a named pipe and turns its events into the same track fields the Air
 """
 
 import asyncio
+import re
 import socket
 
-from .. import Receiver, TrackState
+from .. import Receiver, RequestTrack, TrackState
 from .api import LibrespotApi
 from .librespot import LibrespotProcess
 from .pipe import PipeReader
@@ -16,9 +17,14 @@ from .pipe import PipeReader
 PLAYING_EVENTS = {"playing": True, "paused": False, "stopped": False,
                   "not_playing": False, "will_play": False}
 
+TRACK_URI = re.compile(r"^spotify:track:[A-Za-z0-9]{22}$")
+
 
 class SpotifyReceiver(Receiver):
     source = "spotify"
+
+    #: Spotify plays its queue ahead of the rest of the context, so a queued track is the next one.
+    request_action = "queue"
 
     def __init__(self, settings, hub, artwork, deps) -> None:
         self._settings = settings
@@ -100,6 +106,14 @@ class SpotifyReceiver(Receiver):
 
     async def control(self, command: str) -> bool:
         return await self._api.command(command) if self._api is not None else False
+
+    async def search(self, query: str) -> RequestTrack | None:
+        return await self._api.search(query) if self._api is not None else None
+
+    async def enqueue(self, track_id: str) -> bool:
+        if self._api is None or not TRACK_URI.match(track_id):
+            return False
+        return await self._api.add_to_queue(track_id)
 
     async def _on_event(self, kind: str, data: dict) -> None:
         if kind == "status":

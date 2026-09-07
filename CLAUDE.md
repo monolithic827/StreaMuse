@@ -107,10 +107,22 @@ is unchanged; ffmpeg does the conversion. Do not resample in Python - the pacer 
 
 **Two ports, and this is a security boundary.** The control API, WebSocket, settings and log live on
 the control port (7788) and must never appear on the other one. Only the public port (7789) is handed
-to cloudflared, and everything it serves sits under `/live/{streamKey}/`, is GET or HEAD only, and is
-one of: the HLS playlist and segments, the listener page's own files out of `wwwroot/listen/`, `now`
-(current track as JSON) and `art`. Everything else 404s, including traversal attempts. They are two
-separate aiohttp applications on two runners, so the boundary is structural rather than a guard.
+to cloudflared, and everything it serves sits under `/live/{streamKey}/` and is one of: the HLS
+playlist and segments, the listener page's own files out of `wwwroot/listen/`, `now` (current track
+as JSON), `art`, `search` and `request`. Everything else 404s, including traversal attempts. They
+are two separate aiohttp applications on two runners, so the boundary is structural rather than a
+guard.
+
+`request` is the **one write on the public port and the only POST**, and no other name answers one.
+It and `search` both need `songRequests` on *and* the encoder running, or they 404 like anything
+else that is not on the list - so the default install exposes exactly what it always did. Each is
+rate limited per address by a `Cooldown`, because one spammer must not be what gets the host's
+Spotify account throttled or the machine blocked by Apple. The address is `CF-Connecting-IP`: this
+port is bound to loopback, so `request.remote` is always cloudflared, and Cloudflare overwrites that
+header itself rather than passing the client's. Nothing a listener sends is trusted further than a
+strict id match in the receiver (`spotify:track:` plus 22 alphanumerics, or an all-digit trackId),
+and the title that rides along for the log has its non-printables stripped so it cannot forge a
+second log line.
 
 The public surface must never serialize the state snapshot. That snapshot carries
 `namedTunnelToken` - a Cloudflare credential - along with dependency paths that leak the Windows
@@ -122,6 +134,11 @@ encoder's (separate buttons, plus `autoTunnel`), so with the stream stopped `now
 off-air record and `art` 404s; otherwise anyone holding the hostname could poll what the machine
 plays locally. Do not move that gate into the page: `streamKey` defaults to a constant, so the URL is
 not a secret either.
+
+The listener page needs to know what its request button will do, so `now` carries `requests` as
+`"queue"`, `"ask"` or `""` - the receiver's own `request_action`, never wording. It does tell the
+public which service the host streams from; that is the minimum needed for the button to be honest
+about interrupting, and the host opted in by enabling the feature.
 
 Nothing on the wire carries a display placeholder. `NowPlaying` holds `""` for a field the source did
 not report, and each of the three views - the panel, the video, the listener page - supplies its own
@@ -217,8 +234,47 @@ panel still receives the version as a number: nothing validates it there.
   output is bit-exact against a reference decode, and that comparison is the test that catches this.
 - The TXT record offers uncompressed audio as well (`cn=0,1`), so `PcmDecoder` has to exist; a sender
   that takes it would otherwise crash the session on an ALAC decoder it never announced.
+- **The RTP sockets must only hear the sender that announced the session.** They bind `0.0.0.0` on
+  fixed, well-known ports, so anything on the LAN reaches them, and a second device streaming into
+  6100 gets its packets decrypted with *this* session's key - which is noise, decodes to nothing,
+  and is exactly what "metadata fine, no sound, a wall of `avcodec_send_packet` errors" looks like.
+  `_Datagram` filters on the RTSP peer address for that reason. If a sender ever puts its audio on
+  a different address than its RTSP connection this drops everything, so the first stray address is
+  logged rather than silently ignored - that line is the only thing between the user and unexplained
+  silence.
+- **One sender at a time means every stateful method, not just ANNOUNCE.** `OWNED_METHODS` covers
+  SETUP, RECORD, FLUSH, TEARDOWN and SET_PARAMETER; a non-owner gets 455. TEARDOWN was the dangerous
+  omission - a second device could end the first one's session outright. OPTIONS and GET_PARAMETER
+  stay open on purpose: senders probe with both before they announce anything, and gating them
+  breaks the handshake.
+- **A decode failure is never one packet.** Whatever makes one undecodable makes all of them, and a
+  sender fills about 125 a second - each one a `hub.warn`, which prints *and* fans a broadcast out
+  to every panel socket. `_report_undecodable` counts them and reports at an interval instead.
+- **`RtspServer.stop` has to abort its connections, not just close the server.** Since 3.12.1
+  `Server.wait_closed()` waits for the live handlers as well as the listening socket, and a sender
+  keeps its RTSP connection open for as long as it likes - so with Apple Music still attached,
+  `close()` + `wait_closed()` never returns. Measured, that made every exit hang until
+  `app._shutdown`'s 10 s timeout, log `could not stop the receiver -` with nothing after the dash
+  (`TimeoutError` stringifies to `""`), and then spray "Task was destroyed but it is pending" and
+  `RuntimeError: Event loop is closed` as `runtime.shutdown()` pulled the loop out from under the
+  still-running `_serve`. `abort_clients()` between the two is what lets `_serve` unwind.
 - A failed ANNOUNCE must release the session. Otherwise the connection stays the owner and the SETUP
   that follows runs against parameters that were rejected.
+- **A listener's request cannot reach Apple playback at all, and this is settled.** The Windows app
+  is not scriptable - the COM interface died with iTunes - DACP carries nothing past `playpause`,
+  `nextitem` and `previtem`, and `music://music.apple.com/us/song/{id}` **only opens the app at the
+  track**: measured against the real app, it does not start it, and Apple documents no parameter
+  that would (`MPMusicPlayerController.openToPlay` is the sanctioned equivalent and is
+  iOS/macOS-only). Firing DACP `play` afterwards is not a fix either - the opened page is not
+  selected for playback, so it would resume whatever was playing before, which is a *wrong* track
+  rather than no track. So `request_action` is `"ask"`: `enqueue` looks the id up in the iTunes
+  catalogue and parks a `Requested` on the hub for the panel, and `open_request` is what the host's
+  Open button calls. Search and lookup are the public iTunes APIs - no key, no account.
+- **What the panel shows about a request is looked up again, never taken from the listener.** The
+  POST carries only an id; `itunes.lookup` turns that into the title, artist, album and cover the
+  host actually sees, so nothing a stranger typed is rendered in the panel. A repeat of an id
+  already pending is dropped rather than stacked - the per-address cooldown is no defence against
+  the same track arriving from a roomful of people.
 - Metadata arrives as DMAP over SET_PARAMETER. The Apple apps have been seen packing `artist — album`
   into the artist field with the album empty; that split only fires when the album is genuinely empty,
   because the result is burned into the outgoing video, and it logs when it does so it can be deleted
@@ -257,6 +313,12 @@ panel still receives the version as a number: nothing validates it there.
   Sized close to what a real hardware buffer would hold instead, `Write()` blocks almost immediately,
   so go-librespot can never get more than a fraction of a second ahead of what has actually reached
   `AudioPacer`.
+- **Song requests need nothing registered and nobody logged in.** `POST /token` hands back an access
+  token for the session the desktop app already gave the daemon over zeroconf, which is enough for
+  `api.spotify.com/v1/search`, and `POST /player/add_to_queue` is literally "play next" - Spotify
+  runs its queue ahead of the rest of the context. The token is cached in `LibrespotApi` and dropped
+  only on a 401, because the daemon's handler calls `GetAccessToken(ctx, force=true)` and an
+  uncached call is a real login5 round trip for every search a listener types.
 - `external_volume: true` keeps the broadcast at full scale; Spotify's slider is the listener's
   business, not ours. The AirPlay side ignores its `volume:` messages for the same reason.
 - Password login is gone from Spotify. Credentials arrive by the desktop app handing off over
@@ -361,7 +423,16 @@ details drawer opens.
 The **Spotify** path has never run end to end: it needs the patched go-librespot binary described in
 `vendor/go-librespot/README.md`, and no release carries it yet. Everything up to that binary - the
 config, the process wrapper, the named pipe reader, the API client - is written and the pipe reader
-is verified against synthetic writers, including reconnect cycles.
+is verified against synthetic writers, including reconnect cycles. **Spotify song requests** are
+unverified for the same reason - `add_to_queue` has never been watched move a real queue - though
+the public endpoints, the cooldowns and the off-air gating are checked against a fake source. The
+**Apple** half is verified against the real app: search and lookup resolve real tracks, and the
+`music:` handoff was measured doing exactly what the code now assumes.
+
+`/token` and `/player/add_to_queue` are on go-librespot v0.9.0, which is what `LIBRESPOT_REF` pins,
+and both survive into master - so the bump `vendor/go-librespot/README.md` anticipates keeps them.
+Its `/web-api/` proxy does **not**: it exists only in v0.9.0 and was gone by v0.9.1, which is why
+search goes through `/token` and calls Spotify itself rather than proxying.
 
 The **AirPlay** path is verified end to end against a synthetic RAOP sender that performs the real
 handshake and streams real AES-encrypted ALAC: challenge signing, key unwrap, SETUP, RECORD, DMAP
