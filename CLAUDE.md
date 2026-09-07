@@ -313,6 +313,14 @@ panel still receives the version as a number: nothing validates it there.
   ahead of it, so `_drain` - and therefore `on_finished` - only sees it after pacing out everything
   queued first. Firing `on_finished` the moment ffmpeg's stdout closes, the way it worked pre-queue,
   would advance to the next track while several seconds of the current one were still unplayed.
+- **`_drain` primes a small cushion (`PREBUFFER_SECONDS`) before starting its deadline clock**,
+  rather than starting it the instant the decoder does. Without this, connection churn during
+  startup (a slow TLS handshake, an early `-reconnect`) reads as "already behind" the moment the
+  clock starts, which trips the catch-up path immediately - reproduced live: a track opened with a
+  few seconds of reconnect churn, audibly tried to catch up, got partially shed downstream (logged
+  as "audio buffer overran"), and settled into a permanent partial lag for the rest of the track
+  rather than a one-off startup delay. Priming first lets that churn resolve before the clock has
+  anything to be "behind" against.
 - **`Decoder.stop()` explicitly closes `process._transport`.** One track is one `Decoder`, so this
   runs on every track change rather than once per stream session - killing the process and letting
   its stdin/stdout/stderr pipe transports get cleaned up by their own `__del__` (as ffmpeg.py's

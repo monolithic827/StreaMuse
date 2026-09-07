@@ -13,6 +13,15 @@ fills first and only once it is full does `_reader` stop draining stdout - at th
 own stdout pipe fills too and back-pressures the decode, the same role a real device's small
 hardware buffer plays for go-librespot; the queue just means a short pause no longer starts that
 chain immediately.
+
+`_drain` also primes a small cushion before starting its deadline clock (see `PREBUFFER_SECONDS`).
+Without that, the clock starts the instant the decoder does, before real data has necessarily
+started arriving - connection churn during startup (a slow TLS handshake, an early reconnect) then
+reads as "already behind" the moment the clock starts, which trips the catch-up path immediately,
+gets partially shed downstream, and settles into a permanent partial lag for the rest of the track
+rather than a one-off startup delay. Reproduced live: a track that opened with several seconds of
+`-reconnect` churn, audibly tried to catch up, got partially shed, and played the rest of the track
+still behind - fixed by letting that churn happen before the clock starts rather than against it.
 """
 
 import asyncio
@@ -32,6 +41,15 @@ READ_SIZE = 1 << 16
 #: before it reaches the sink as silence.
 QUEUE_SECONDS = 8.0
 QUEUE_SIZE = max(1, round(QUEUE_SECONDS / (READ_SIZE / FRAME_BYTES / SAMPLE_RATE)))
+
+#: How much to bank before `_drain` starts its deadline clock. Without this, the clock starts the
+#: instant the decoder does, before real data has necessarily started arriving - a slow TLS
+#: handshake or an early reconnect during startup then reads as "already behind", which trips the
+#: catch-up path immediately and gets partially shed downstream, settling into a permanent partial
+#: lag for the rest of the track rather than a one-off startup delay. Priming first means that
+#: churn happens before the clock starts rather than against it.
+PREBUFFER_SECONDS = 1.5
+PREBUFFER_CHUNKS = max(1, round(PREBUFFER_SECONDS / (READ_SIZE / FRAME_BYTES / SAMPLE_RATE)))
 
 #: How far ahead of real time the drain may run before it throttles.
 LEAD_SECONDS = 0.2
@@ -131,12 +149,31 @@ class Decoder:
 
     async def _drain(self, on_pcm) -> None:
         tail = b""
+
+        # Primed without pacing or delivering - this is what lets startup churn resolve before the
+        # deadline clock (started only after) has anything to be "behind" against. A track shorter
+        # than the prebuffer hits EOF here instead, which the delivery loop below then drains
+        # exactly like any other end of stream.
+        primed: list[bytes] = []
+        eof_after_priming = False
+        for _ in range(PREBUFFER_CHUNKS):
+            chunk = await self._queue.get()
+            if not chunk:
+                eof_after_priming = True
+                break
+            primed.append(chunk)
+
         deadline = time.monotonic()
 
         try:
             while True:
                 await self._resume.wait()
-                data = await self._queue.get()
+                if primed:
+                    data = primed.pop(0)
+                elif eof_after_priming:
+                    data = b""
+                else:
+                    data = await self._queue.get()
                 if not data:
                     return
 
