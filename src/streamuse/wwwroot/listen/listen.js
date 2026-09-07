@@ -33,7 +33,7 @@ const el = {
   discard: document.getElementById('discard')
 };
 
-const QUEUE_LABELS = { queue: 'Play next', ask: 'Ask the DJ' };
+const QUEUE_LABELS = { queue: 'Add to Queue', ask: 'Ask for Song' };
 
 let track = null;
 let receivedAt = 0;
@@ -128,8 +128,9 @@ function render() {
   renderProgress();
 }
 
-/* The host says what the button will do - "queue" lines the track up behind the current one, "play"
-   starts it - and the wording for each lives here, so nothing on the wire is display text. */
+/* The host says what the button will do - "queue" lines the track up behind the current one, "ask"
+   hands it to the host - and the wording for each lives here, so nothing on the wire is display
+   text. */
 function renderRequests(live) {
   const action = live ? track.requests : '';
 
