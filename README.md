@@ -84,15 +84,17 @@ from wall clock - and writes what it heard to a WAV.
 uv run pyinstaller streamuse.spec --noconfirm   # dist/StreaMuse.exe
 ```
 
-CI builds the same one-file exe on every push and publishes it as a release: a `v*` tag gets its own
-versioned release, and every other push to `main` replaces a rolling `latest` release so the newest
-working build is always the one a new user finds. It stages ffmpeg and cloudflared into `vendor/bin`
-first and fails the build if either is missing, so a release can never ship without them.
+CI builds the same one-file exe on every push and uploads it as a workflow artifact. Publishing is a
+separate, deliberate act: only a `v*` tag creates a release, so an ordinary commit to `main` cannot
+move what the download link above points at. Either way the build stages ffmpeg and cloudflared into
+`vendor/bin` first and fails if either is missing, so a release can never ship without them.
 
 go-librespot is built by a separate workflow (`.github/workflows/go-librespot.yml`) and published
 under its own `go-librespot-*` tag rather than shipped in the exe, because its own Windows build
 cannot write audio to a pipe and has to be patched - see `vendor/go-librespot/`. The app downloads
 that asset when it needs it, so the app build neither waits on it nor can ship a stale copy of it.
+Nothing triggers that workflow automatically - run it by hand when the patch or the pinned ref
+changes, since a rerun replaces the asset every install downloads.
 
 Running from source (`uv run streamuse`) behaves identically: ffmpeg and cloudflared are downloaded
 into `%LOCALAPPDATA%\StreaMuse\bin` on first launch, ~200 MB, once. The AirPlay speaker is

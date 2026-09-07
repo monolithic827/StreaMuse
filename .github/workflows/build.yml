@@ -54,24 +54,7 @@ jobs:
           path: dist/StreaMuse.exe
 
       - name: Release
-        # A version tag publishes a proper versioned release. Every other push to main replaces a
-        # rolling "latest" release instead, so what a new user downloads is the newest working build
-        # rather than whatever was last tagged by hand - the README sends them straight to it.
-        if: github.event_name == 'push'
+        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          if ("${{ github.ref }}" -like "refs/tags/v*") {
-            gh release create $env:GITHUB_REF_NAME dist/StreaMuse.exe --generate-notes
-          } else {
-            # Asked rather than attempted-and-ignored: this shell stops the step on any non-zero
-            # exit, so a delete of a release that is not there yet would fail the first run.
-            $tags = (gh release list --limit 100 --json tagName | ConvertFrom-Json).tagName
-            if ($tags -contains 'latest') { gh release delete latest --yes --cleanup-tag }
-
-            gh release create latest dist/StreaMuse.exe `
-              --title "StreaMuse (latest build)" `
-              --notes "Automatic build of the newest main branch commit ($env:GITHUB_SHA)." `
-              --target $env:GITHUB_SHA `
-              --latest
-          }
+        run: gh release create $env:GITHUB_REF_NAME dist/StreaMuse.exe --generate-notes

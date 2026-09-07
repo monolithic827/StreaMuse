@@ -12,11 +12,6 @@ name: go-librespot
 # workflow) the first time and whenever LIBRESPOT_REF changes.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'vendor/go-librespot/**'
-      - '.github/workflows/go-librespot.yml'
   workflow_dispatch:
 
 permissions:
