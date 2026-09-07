@@ -46,13 +46,20 @@ uv run pyinstaller streamuse.spec --noconfirm  # dist/StreaMuse.exe
 the spec adds it explicitly and `paths.wwwroot()` resolves it identically from a checkout and from the
 unpacked bundle; editing the panel needs no rebuild when running from source.
 
-**The exe ships ffmpeg, cloudflared and go-librespot inside it**, so a download of it works offline
-and on first launch - which is the point, and why the release build must not silently produce an exe
-without them. CI stages the three into `vendor/bin` (gitignored) and *fails* if any is missing; the
-spec adds whatever is staged as `datas` under `bin/`, and `paths.bundled_bin()` is the first place
+**The exe ships ffmpeg and cloudflared inside it**, so streaming works offline and on first launch -
+which is the point, and why the release build must not silently produce an exe without them. CI
+stages the two into `vendor/bin` (gitignored) and *fails* if either is missing; the spec adds
+whatever is staged as `datas` under `bin/`, and `paths.bundled_bin()` is the first place
 `deps.resolve` looks. A local `pyinstaller` run with nothing staged still builds - the result just
-falls back to downloading, which is what a source checkout does anyway. go-librespot has no
-downloadable build at all, so CI builds it: see the `librespot` job and `vendor/go-librespot/`.
+falls back to downloading, which is what a source checkout does anyway.
+
+**go-librespot is downloaded, never bundled**, by every install alike. It is the one dependency with
+no upstream Windows build we can use, so `.github/workflows/go-librespot.yml` builds the patched one
+and publishes it under its own `go-librespot-{ref}` tag; `deps.GO_LIBRESPOT_REF` names the same
+upstream release and builds the URL from it, so the two must move together. Keeping it out of the exe
+is deliberate: the app build then neither waits on that job nor can ship a stale copy, and one
+publish fixes Spotify for everyone already holding an exe. Nothing triggers that workflow on an
+ordinary push - run it by hand when the patch or the ref changes.
 
 There is **no test project**. Verification is done by running the app and checking real behaviour.
 
@@ -285,11 +292,18 @@ panel still receives the version as a number: nothing validates it there.
   system default device with no way to select another. `vendor/go-librespot/` holds the one-file patch
   that implements the pipe there and the steps to build it; until that binary exists the Spotify
   source reports itself unavailable and Apple Music is unaffected.
-- **`go-librespot.exe` is resolved, never downloaded.** No release carries the patch, so a URL for it
-  is a URL that 404s - which it did, on every launch, as a red error in the log of everyone using
-  Apple Music. The exe carries a build made by CI; from source it is whatever the user built.
-  `DependencyManager.go_librespot` is a property over `resolve`, which also means a binary dropped
-  into `BIN_DIR` needs no restart. Restore a download only against an asset that exists.
+- **`go-librespot.exe` is downloaded from our own release asset**, because no upstream release
+  carries the patch. A URL for it must therefore be one this repo publishes - point it anywhere else
+  and it 404s on every launch, as a red error in the log of everyone using Apple Music, which is
+  what it did while no such asset existed. `DependencyManager.go_librespot` stays a property over
+  `resolve` rather than an attribute set during `ensure_all`: the source is selected *before* the
+  downloads run, so the receiver has to be able to see the binary the moment it lands, and a
+  hand-built one dropped into `BIN_DIR` needs no restart either. `app._prepare` selects the source a
+  second time afterwards for the same reason - on a first launch with Spotify selected there is
+  nothing to start until the download finishes.
+- The downloaded archive carries the exe **and** its DLLs together, so a machine gets a working set
+  or none at all. Do not split them into two downloads again: the pair that is half-installed is the
+  one that fails in Windows' own "DLL was not found" dialog, which never names go-librespot.
 - The named pipe instance must exist **before** the daemon starts, because go-librespot is the client
   and its open fails outright when nothing is listening.
 - go-librespot closes the pipe on stop and on playback moving to another device, and reopens it on the
@@ -327,11 +341,11 @@ panel still receives the version as a number: nothing validates it there.
   `libvorbis-0`, `libogg-0`, `libwinpthread-1` - because CGO links them dynamically. A machine
   without MSYS2 got Windows' bare "DLL was not found" dialog, never mentioning go-librespot. Ship
   the whole closure, not just what `go-librespot.exe` itself imports: forcing `libogg` static (see
-  the `librespot` job's own comment for why) only settles go-librespot's own link, and the prebuilt
+  the build step's own comment for why) only settles go-librespot's own link, and the prebuilt
   `libFLAC` and `libvorbis-0` still import the shared `libogg-0`, `libFLAC` also `libwinpthread-1`.
-  Check by dumping the import table of each staged DLL rather than trusting the exe's. CI stages and
-  bundles all six the same way as the exe itself; `deps.py` also downloads them from this repo's
-  own release if a machine still finds them missing. They land in `BIN_DIR` rather than next to the exe, because the
+  Check by dumping the import table of each built DLL rather than trusting the exe's. All six go into
+  the published archive beside the exe, and `deps.py` extracts the lot.
+  They land in `BIN_DIR` rather than next to the exe, because the
   exe can be running out of a onefile temp extraction that is gone by the next launch while
   `BIN_DIR` survives - so `LibrespotProcess` puts `BIN_DIR` on the child's `PATH` instead of relying
   on the exe's own directory.
@@ -421,7 +435,8 @@ details drawer opens.
 ## Not yet verified
 
 The **Spotify** path has never run end to end: it needs the patched go-librespot binary described in
-`vendor/go-librespot/README.md`, and no release carries it yet. Everything up to that binary - the
+`vendor/go-librespot/README.md`, and the workflow that publishes it has not been run yet - until it
+is, `deps.GO_LIBRESPOT_URL` is a URL for an asset that does not exist. Everything up to that binary - the
 config, the process wrapper, the named pipe reader, the API client - is written and the pipe reader
 is verified against synthetic writers, including reconnect cycles. **Spotify song requests** are
 unverified for the same reason - `add_to_queue` has never been watched move a real queue - though
@@ -429,7 +444,8 @@ the public endpoints, the cooldowns and the off-air gating are checked against a
 **Apple** half is verified against the real app: search and lookup resolve real tracks, and the
 `music:` handoff was measured doing exactly what the code now assumes.
 
-`/token` and `/player/add_to_queue` are on go-librespot v0.9.0, which is what `LIBRESPOT_REF` pins,
+`/token` and `/player/add_to_queue` are on go-librespot v0.9.0, which is what `GO_LIBRESPOT_REF` and
+the workflow's `LIBRESPOT_REF` pin,
 and both survive into master - so the bump `vendor/go-librespot/README.md` anticipates keeps them.
 Its `/web-api/` proxy does **not**: it exists only in v0.9.0 and was gone by v0.9.1, which is why
 search goes through `/token` and calls Spotify itself rather than proxying.
