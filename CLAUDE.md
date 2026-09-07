@@ -136,7 +136,7 @@ plays locally. Do not move that gate into the page: `streamKey` defaults to a co
 not a secret either.
 
 The listener page needs to know what its request button will do, so `now` carries `requests` as
-`"queue"`, `"play"` or `""` - the receiver's own `request_action`, never wording. It does tell the
+`"queue"`, `"ask"` or `""` - the receiver's own `request_action`, never wording. It does tell the
 public which service the host streams from; that is the minimum needed for the button to be honest
 about interrupting, and the host opted in by enabling the feature.
 
@@ -236,14 +236,21 @@ panel still receives the version as a number: nothing validates it there.
   that takes it would otherwise crash the session on an ALAC decoder it never announced.
 - A failed ANNOUNCE must release the session. Otherwise the connection stays the owner and the SETUP
   that follows runs against parameters that were rejected.
-- **There is no Apple queue to write to.** The Apple Music app for Windows is not scriptable - the
-  COM interface died with iTunes - and DACP carries nothing past `playpause`, `nextitem` and
-  `previtem`, so a listener request is a `music:` handoff (`sources/airplay/itunes.py`) that starts
-  the track rather than lining it up: `request_action` is `"play"`, not `"queue"`. Search is the
-  public iTunes Search API, which needs no key and no account. Whether the handoff *plays* or only
-  opens the app at that track has not been measured on a real machine yet; if it turns out to only
-  navigate, `DacpClient` fired straight after may finish the job - `play` was a live verb in
-  `COMMANDS` until commit `295f43e`.
+- **A listener's request cannot reach Apple playback at all, and this is settled.** The Windows app
+  is not scriptable - the COM interface died with iTunes - DACP carries nothing past `playpause`,
+  `nextitem` and `previtem`, and `music://music.apple.com/us/song/{id}` **only opens the app at the
+  track**: measured against the real app, it does not start it, and Apple documents no parameter
+  that would (`MPMusicPlayerController.openToPlay` is the sanctioned equivalent and is
+  iOS/macOS-only). Firing DACP `play` afterwards is not a fix either - the opened page is not
+  selected for playback, so it would resume whatever was playing before, which is a *wrong* track
+  rather than no track. So `request_action` is `"ask"`: `enqueue` looks the id up in the iTunes
+  catalogue and parks a `Requested` on the hub for the panel, and `open_request` is what the host's
+  Open button calls. Search and lookup are the public iTunes APIs - no key, no account.
+- **What the panel shows about a request is looked up again, never taken from the listener.** The
+  POST carries only an id; `itunes.lookup` turns that into the title, artist, album and cover the
+  host actually sees, so nothing a stranger typed is rendered in the panel. A repeat of an id
+  already pending is dropped rather than stacked - the per-address cooldown is no defence against
+  the same track arriving from a roomful of people.
 - Metadata arrives as DMAP over SET_PARAMETER. The Apple apps have been seen packing `artist — album`
   into the artist field with the album empty; that split only fires when the album is genuinely empty,
   because the result is burned into the outgoing video, and it logs when it does so it can be deleted
@@ -392,10 +399,11 @@ details drawer opens.
 The **Spotify** path has never run end to end: it needs the patched go-librespot binary described in
 `vendor/go-librespot/README.md`, and no release carries it yet. Everything up to that binary - the
 config, the process wrapper, the named pipe reader, the API client - is written and the pipe reader
-is verified against synthetic writers, including reconnect cycles. **Song requests** are unverified
-on both sides for the same reason: the public endpoints, the cooldowns and the off-air gating are
-checked against a fake source, and Apple's half of it resolves real tracks out of the iTunes Search
-API, but neither `add_to_queue` nor the `music:` handoff has been watched actually move a queue.
+is verified against synthetic writers, including reconnect cycles. **Spotify song requests** are
+unverified for the same reason - `add_to_queue` has never been watched move a real queue - though
+the public endpoints, the cooldowns and the off-air gating are checked against a fake source. The
+**Apple** half is verified against the real app: search and lookup resolve real tracks, and the
+`music:` handoff was measured doing exactly what the code now assumes.
 
 `/token` and `/player/add_to_queue` are on go-librespot v0.9.0, which is what `LIBRESPOT_REF` pins,
 and both survive into master - so the bump `vendor/go-librespot/README.md` anticipates keeps them.

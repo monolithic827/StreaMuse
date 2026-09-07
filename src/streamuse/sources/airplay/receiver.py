@@ -30,8 +30,8 @@ SILENCE_TIMEOUT = 1.0
 class AirPlayReceiver(Receiver):
     source = "apple"
 
-    #: There is no queue to write to on Windows, so a request starts playing - see itunes.py.
-    request_action = "play"
+    #: Nothing here can reach Apple Music's queue, so a request goes to the host - see itunes.py.
+    request_action = "ask"
 
     def __init__(self, settings, hub, artwork) -> None:
         self._settings = settings
@@ -117,7 +117,14 @@ class AirPlayReceiver(Receiver):
         return await itunes.search(query, self._hub)
 
     async def enqueue(self, track_id: str) -> bool:
-        return itunes.play(track_id)
+        track = await itunes.lookup(track_id, self._hub)
+        if track is None:
+            return False
+        self._hub.add_request(track)
+        return True
+
+    async def open_request(self, track_id: str) -> bool:
+        return itunes.open_in_app(track_id)
 
     # The RTSP server calls these as the sender drives the session.
 

@@ -33,7 +33,7 @@ const el = {
   discard: document.getElementById('discard')
 };
 
-const QUEUE_LABELS = { queue: 'Play next', play: 'Play now' };
+const QUEUE_LABELS = { queue: 'Play next', ask: 'Ask the DJ' };
 
 let track = null;
 let receivedAt = 0;
@@ -195,7 +195,9 @@ el.ask.addEventListener('submit', async event => {
 el.queue.addEventListener('click', async () => {
   if (!found) return;
 
-  const done = track.requests === 'play' ? `Playing ${found.title}` : `Queued ${found.title}`;
+  const done = track.requests === 'ask'
+    ? `Sent to the DJ - ${found.title}`
+    : `Queued ${found.title}`;
 
   const { ok, body } = await ask('request', {
     method: 'POST',

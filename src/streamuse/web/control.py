@@ -75,6 +75,17 @@ def build_app(hub, deps, artwork, settings, pipeline, tunnel, sources, public_po
             raise web.HTTPInternalServerError(text="the source is not accepting commands")
         return web.Response()
 
+    async def request_open(request):
+        track_id = (await request.json()).get("id") or ""
+        if not await sources.open_request(track_id):
+            raise web.HTTPInternalServerError(text="could not open that request")
+        hub.drop_request(track_id)
+        return web.Response()
+
+    async def request_drop(request):
+        hub.drop_request((await request.json()).get("id") or "")
+        return web.Response()
+
     async def websocket(request):
         socket = web.WebSocketResponse(heartbeat=20)
         await socket.prepare(request)
@@ -93,6 +104,8 @@ def build_app(hub, deps, artwork, settings, pipeline, tunnel, sources, public_po
     app.router.add_post("/api/tunnel/stop", tunnel_stop)
     app.router.add_post("/api/deps/refresh", deps_refresh)
     app.router.add_post("/api/player/{command}", player)
+    app.router.add_post("/api/requests/open", request_open)
+    app.router.add_post("/api/requests/drop", request_drop)
     app.router.add_get("/ws", websocket)
     app.router.add_get("/", index)
     app.router.add_static("/", paths.wwwroot())

@@ -122,6 +122,11 @@ class Receiver:
     async def enqueue(self, track_id: str) -> bool:
         return False
 
+    async def open_request(self, track_id: str) -> bool:
+        """Only reached for a receiver whose enqueue parks the request for the host instead of
+        acting on it."""
+        return False
+
 
 class SourceManager:
     def __init__(self, settings, hub, artwork, sink, receivers: dict[str, Receiver]) -> None:
@@ -184,6 +189,10 @@ class SourceManager:
     async def enqueue(self, track_id: str) -> bool:
         receiver = self._active
         return await receiver.enqueue(track_id) if receiver is not None else False
+
+    async def open_request(self, track_id: str) -> bool:
+        receiver = self._active
+        return await receiver.open_request(track_id) if receiver is not None else False
 
     def start_publishing(self) -> None:
         self._publisher = asyncio.create_task(self._publish_loop())
