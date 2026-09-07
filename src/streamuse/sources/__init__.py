@@ -14,7 +14,7 @@ SAMPLE_RATE = 44100
 
 PUBLISH_INTERVAL = 1.0
 
-LABELS = {"apple": "Apple Music", "spotify": "Spotify"}
+LABELS = {"apple": "Apple Music", "spotify": "Spotify", "ytdlp": "YouTube / SoundCloud"}
 
 
 class TrackState:
@@ -99,6 +99,11 @@ class Receiver:
     async def control(self, command: str) -> bool:
         return False
 
+    async def load(self, query: str) -> bool:
+        """Overridden only by a source that accepts an on-demand URL or search query rather than
+        waiting for something else to connect."""
+        return False
+
 
 class SourceManager:
     def __init__(self, settings, hub, artwork, sink, receivers: dict[str, Receiver]) -> None:
@@ -148,6 +153,10 @@ class SourceManager:
     async def control(self, command: str) -> bool:
         receiver = self._active
         return await receiver.control(command) if receiver is not None else False
+
+    async def load(self, query: str) -> bool:
+        receiver = self._active
+        return await receiver.load(query) if receiver is not None else False
 
     def start_publishing(self) -> None:
         self._publisher = asyncio.create_task(self._publish_loop())

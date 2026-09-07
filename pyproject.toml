@@ -16,6 +16,7 @@ dependencies = [
     "pillow>=12.3.0",
     "python-bidi>=0.6.11",
     "pywebview>=6.2.1",
+    "yt-dlp>=2026.8.19",
     "zeroconf>=0.151.3",
 ]
 

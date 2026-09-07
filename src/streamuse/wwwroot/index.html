@@ -99,9 +99,17 @@
           <label class="seg-opt src-opt" data-source-opt="spotify">
             <input type="radio" name="src" value="spotify" data-source>Spotify
           </label>
+          <label class="seg-opt src-opt" data-source-opt="ytdlp">
+            <input type="radio" name="src" value="ytdlp" data-source>YouTube / SoundCloud
+          </label>
         </div>
         <div class="conn">
           <i data-bind="connDot"></i><span data-bind="connLabel">Starting up…</span>
+        </div>
+        <div data-bind-show="ytdlpActive"
+          style="display:flex;align-items:center;gap:var(--space-2);margin-top:var(--space-2)">
+          <input class="input" id="ytdlp-query" placeholder="YouTube / SoundCloud link, or a search">
+          <button class="btn btn-secondary" id="ytdlp-play" style="flex:none">Play</button>
         </div>
       </section>
 
@@ -194,6 +202,12 @@
         <div class="field">
           <label for="set-key">Stream key - the path segment in the public URL</label>
           <input class="input" id="set-key">
+        </div>
+
+        <div class="field">
+          <label for="set-cookies">Cookies file - Netscape format, for age-restricted or private
+            YouTube/SoundCloud links</label>
+          <input class="input" id="set-cookies" placeholder="C:\path\to\cookies.txt">
         </div>
 
         <div class="field">

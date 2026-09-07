@@ -6,9 +6,11 @@ This file provides guidance to AI coding agents when working with code in this r
 
 StreaMuse **is the speaker**. It advertises itself as an AirPlay device that Apple Music streams to,
 and as a Spotify Connect device that the Spotify app hands playback to, then re-streams what arrives
-as an HLS (`.m3u8`) stream published through a Cloudflare tunnel. One Python package hosts
-everything: two aiohttp servers, the receivers, the encoder pipeline, and a pywebview window showing
-the control panel. Windows-only by design.
+as an HLS (`.m3u8`) stream published through a Cloudflare tunnel. A third source, YouTube and
+SoundCloud through yt-dlp, is not a receiver at all - nothing connects to us, a URL or search typed
+into the panel is resolved and decoded on request. One Python package hosts everything: two aiohttp
+servers, the receivers, the encoder pipeline, and a pywebview window showing the control panel.
+Windows-only by design.
 
 Because audio, metadata and artwork all arrive over the same session, a track can never be
 attributed to the wrong source - which is the whole reason for the receiver design over the WASAPI
@@ -85,6 +87,7 @@ Useful techniques used in practice:
 AirPlayReceiver  mDNS _raop._tcp ─ RTSP :5100 ─ RTP udp 6100-6102 ─┐
 SpotifyReceiver  go-librespot.exe ─ \\.\pipe\streamuse-spotify ────┤ only the selected one runs
                  + its HTTP API on loopback                        │
+YtDlpReceiver    panel URL/search ─ yt-dlp extract ─ ffmpeg decode ┘
                                                                    ▼
                           track + artwork ──> StateHub ──> WebSocket ──> control panel
                           PCM s16le 44.1k ──> LevelMeter + AudioPacer ─┐
@@ -274,6 +277,33 @@ panel still receives the version as a number: nothing validates it there.
   `BIN_DIR` survives - so `LibrespotProcess` puts `BIN_DIR` on the child's `PATH` instead of relying
   on the exe's own directory.
 
+**yt-dlp**
+- yt-dlp is a pip dependency, not a downloaded exe like ffmpeg and cloudflared - it has a Python API,
+  PyInstaller bundles it into the exe like any other import, and there is no separate binary for
+  `deps.py` to resolve. Only `sources/ytdlp/extractor.py` imports it; ffmpeg does the actual decode,
+  the same as everywhere else in this app.
+- `YtDlpReceiver` is not a receiver in the AirPlay/Spotify sense - nothing ever connects to it, so
+  `start()` only records the sink and `load()` (called from `/api/source/load`) is what actually
+  begins a track. `SourceManager` and `Receiver` both grew a `load()` alongside `control()` for this;
+  every other source's default just returns `False`.
+- **A resolved stream URL is signed to the request that fetched it.** `extract_info`'s `http_headers`
+  (User-Agent above all) have to travel with the URL to ffmpeg's `-headers`, or YouTube's and
+  SoundCloud's CDNs answer 403 - verified end to end against both.
+- **ffmpeg decoding a network URL runs far faster than playback**, so draining its stdout as fast as
+  bytes arrive would hand the pacer a whole track in a few seconds, same as the Spotify pipe failure
+  this same section already describes. `sources/ytdlp/decoder.py` paces the drain to real time the
+  same way `PipeReader` does, but natively async - ffmpeg's stdout is already a non-blocking asyncio
+  pipe, so no thread is needed. Pausing it (`playpause`) stops reading rather than stopping ffmpeg:
+  the pipe is small enough that ffmpeg's own write then blocks, back-pressuring the decode exactly
+  the way a small pipe buffer throttles go-librespot.
+- yt-dlp's own error reporting prints straight to the console even with `quiet`/`no_warnings` set,
+  ahead of raising - a caller that already turns the same exception into `hub.error` would otherwise
+  show it twice, once outside the log. `extractor._SilentLogger` is the documented way to fully
+  silence it.
+- `cookiesFile` is one Netscape-format `cookies.txt` for both sites, a straight passthrough to
+  yt-dlp's `cookiefile` option, which filters by domain on its own - there is no per-source cookie
+  setting to keep in sync.
+
 **Serialization and background tasks**
 - Never put a non-finite `float` into anything serialized. `state.dumps` passes `allow_nan=False`, so
   a mistake raises here instead of emitting JSON a browser silently rejects (see `LevelMeter.read`,
@@ -373,3 +403,9 @@ quiet.
 
 The pipeline, both web surfaces, the tunnel, the frozen exe and the panel have been verified by
 running them.
+
+The **yt-dlp** path is verified end to end against real YouTube and SoundCloud, including a search
+query, resolving a real signed URL, ffmpeg decoding it with the required headers, real-time pacing,
+pause/resume back-pressuring the decode, and both a bad URL and a bad cookies file failing cleanly
+without taking the receiver down. Not yet exercised: a cookies file that actually unlocks
+age-restricted or private content, since verifying that needs a real account's exported cookies.
