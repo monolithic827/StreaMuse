@@ -1,7 +1,7 @@
 'use strict';
 
 const METER_BARS = 34;
-const SOURCE_LABELS = { apple: 'Apple Music', spotify: 'Spotify', ytdlp: 'YouTube / SoundCloud' };
+const SOURCE_LABELS = { apple: 'Apple Music', spotify: 'Spotify', ytdlp: 'yt-dlp' };
 const THEMES = ['Auto', 'Dark', 'Light'];
 
 const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');

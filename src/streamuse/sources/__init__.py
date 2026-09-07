@@ -14,7 +14,7 @@ SAMPLE_RATE = 44100
 
 PUBLISH_INTERVAL = 1.0
 
-LABELS = {"apple": "Apple Music", "spotify": "Spotify", "ytdlp": "YouTube / SoundCloud"}
+LABELS = {"apple": "Apple Music", "spotify": "Spotify", "ytdlp": "yt-dlp"}
 
 
 class TrackState:

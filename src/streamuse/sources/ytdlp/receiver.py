@@ -43,7 +43,7 @@ class YtDlpReceiver(Receiver):
     @property
     def status_text(self) -> str:
         if self._decoder is None:
-            return "Paste a YouTube or SoundCloud link, or a search, to play"
+            return "Paste a link, or search, for yt-dlp to play"
         return f"Playing '{self._title}'" if self._track.playing else f"Paused - '{self._title}'"
 
     def track(self) -> TrackState:
