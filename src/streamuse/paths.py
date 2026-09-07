@@ -20,8 +20,8 @@ def wwwroot() -> Path:
 
 
 def bundled_bin() -> Path | None:
-    """ffmpeg, cloudflared and go-librespot as shipped inside the exe, or None in a source
-    checkout - where `deps` downloads the first two and the third is built by hand."""
+    """ffmpeg and cloudflared as shipped inside the exe, or None in a source checkout - where `deps`
+    downloads them. go-librespot is never in here; `deps` downloads it either way."""
     unpacked = getattr(sys, "_MEIPASS", None)
     return Path(unpacked) / "bin" if unpacked else None
 

@@ -3,12 +3,12 @@
 # wwwroot is data, not code, so it is added explicitly and read through paths.wwwroot() - which
 # resolves the same from a source checkout and from the unpacked bundle.
 #
-# ffmpeg, cloudflared and go-librespot are shipped inside the exe so a download works offline and
-# on first launch: CI stages them into vendor/bin (see .github/workflows/build.yml) and
-# paths.bundled_bin() is where deps.resolve looks first. They and go-librespot's DLLs go in as datas
-# rather than binaries because they are foreign programs, not libraries to be scanned for
-# dependencies. A local build with nothing staged still produces a working exe - it just falls back
-# to downloading them.
+# ffmpeg and cloudflared are shipped inside the exe so streaming works offline and on first launch:
+# CI stages them into vendor/bin (see .github/workflows/build.yml) and paths.bundled_bin() is where
+# deps.resolve looks first. They go in as datas rather than binaries because they are foreign
+# programs, not libraries to be scanned for dependencies. A local build with nothing staged still
+# produces a working exe - it just falls back to downloading them, as it always does for
+# go-librespot, which is deliberately not bundled.
 
 from pathlib import Path
 
