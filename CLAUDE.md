@@ -234,6 +234,14 @@ panel still receives the version as a number: nothing validates it there.
   output is bit-exact against a reference decode, and that comparison is the test that catches this.
 - The TXT record offers uncompressed audio as well (`cn=0,1`), so `PcmDecoder` has to exist; a sender
   that takes it would otherwise crash the session on an ALAC decoder it never announced.
+- **`RtspServer.stop` has to abort its connections, not just close the server.** Since 3.12.1
+  `Server.wait_closed()` waits for the live handlers as well as the listening socket, and a sender
+  keeps its RTSP connection open for as long as it likes - so with Apple Music still attached,
+  `close()` + `wait_closed()` never returns. Measured, that made every exit hang until
+  `app._shutdown`'s 10 s timeout, log `could not stop the receiver -` with nothing after the dash
+  (`TimeoutError` stringifies to `""`), and then spray "Task was destroyed but it is pending" and
+  `RuntimeError: Event loop is closed` as `runtime.shutdown()` pulled the loop out from under the
+  still-running `_serve`. `abort_clients()` between the two is what lets `_serve` unwind.
 - A failed ANNOUNCE must release the session. Otherwise the connection stays the owner and the SETUP
   that follows runs against parameters that were rejected.
 - **A listener's request cannot reach Apple playback at all, and this is settled.** The Windows app

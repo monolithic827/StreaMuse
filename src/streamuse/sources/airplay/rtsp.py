@@ -50,6 +50,7 @@ class RtspServer:
         if self._server is None:
             return
         self._server.close()
+        self._server.abort_clients()
         try:
             await self._server.wait_closed()
         except Exception:
