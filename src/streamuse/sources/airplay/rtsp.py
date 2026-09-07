@@ -17,6 +17,9 @@ AUDIO_LATENCY = 11025
 PUBLIC_METHODS = ("ANNOUNCE, SETUP, RECORD, PAUSE, FLUSH, TEARDOWN, OPTIONS, "
                   "GET_PARAMETER, SET_PARAMETER")
 
+#: Only the connection that announced the session may drive it.
+OWNED_METHODS = ("SETUP", "RECORD", "FLUSH", "TEARDOWN", "SET_PARAMETER")
+
 
 class SessionInfo:
     def __init__(self) -> None:
@@ -98,6 +101,13 @@ class RtspServer:
             if headers.get(name):
                 setattr(session, attribute, headers[name])
 
+        # These drive the session the owner established, so a second sender must not reach them: it
+        # would otherwise tear down, reseek or relabel a stream that is not its own while the first
+        # device is still playing. OPTIONS and GET_PARAMETER stay open - senders probe with both
+        # before they announce anything.
+        if method in OWNED_METHODS and self._owner is not connection:
+            return _response("455 Method Not Valid In This State", headers, {})
+
         if method == "OPTIONS":
             extra["Public"] = PUBLIC_METHODS
 
@@ -113,8 +123,6 @@ class RtspServer:
             await self._handler.on_announce(session)
 
         elif method == "SETUP":
-            if self._owner is not connection:
-                return _response("455 Method Not Valid In This State", headers, {})
             ports = await self._handler.on_setup(session, _transport_ports(headers))
             if ports is None:
                 return _response("461 Unsupported Transport", headers, {})
@@ -133,8 +141,7 @@ class RtspServer:
 
         elif method == "TEARDOWN":
             extra["Connection"] = "close"
-            if self._owner is connection:
-                self._owner = None
+            self._owner = None
             await self._handler.on_teardown()
 
         elif method == "GET_PARAMETER":

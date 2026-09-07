@@ -234,6 +234,22 @@ panel still receives the version as a number: nothing validates it there.
   output is bit-exact against a reference decode, and that comparison is the test that catches this.
 - The TXT record offers uncompressed audio as well (`cn=0,1`), so `PcmDecoder` has to exist; a sender
   that takes it would otherwise crash the session on an ALAC decoder it never announced.
+- **The RTP sockets must only hear the sender that announced the session.** They bind `0.0.0.0` on
+  fixed, well-known ports, so anything on the LAN reaches them, and a second device streaming into
+  6100 gets its packets decrypted with *this* session's key - which is noise, decodes to nothing,
+  and is exactly what "metadata fine, no sound, a wall of `avcodec_send_packet` errors" looks like.
+  `_Datagram` filters on the RTSP peer address for that reason. If a sender ever puts its audio on
+  a different address than its RTSP connection this drops everything, so the first stray address is
+  logged rather than silently ignored - that line is the only thing between the user and unexplained
+  silence.
+- **One sender at a time means every stateful method, not just ANNOUNCE.** `OWNED_METHODS` covers
+  SETUP, RECORD, FLUSH, TEARDOWN and SET_PARAMETER; a non-owner gets 455. TEARDOWN was the dangerous
+  omission - a second device could end the first one's session outright. OPTIONS and GET_PARAMETER
+  stay open on purpose: senders probe with both before they announce anything, and gating them
+  breaks the handshake.
+- **A decode failure is never one packet.** Whatever makes one undecodable makes all of them, and a
+  sender fills about 125 a second - each one a `hub.warn`, which prints *and* fans a broadcast out
+  to every panel socket. `_report_undecodable` counts them and reports at an interval instead.
 - **`RtspServer.stop` has to abort its connections, not just close the server.** Since 3.12.1
   `Server.wait_closed()` waits for the live handlers as well as the listening socket, and a sender
   keeps its RTSP connection open for as long as it likes - so with Apple Music still attached,

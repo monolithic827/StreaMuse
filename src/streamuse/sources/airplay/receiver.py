@@ -144,7 +144,7 @@ class AirPlayReceiver(Receiver):
         rate = session.fmtp[-1] if alac else 44100
 
         self._rtp = RtpSession(session.key, session.iv, decoder, frames, rate,
-                               self._deliver, self._hub)
+                               self._deliver, self._hub, session.address)
         return await self._rtp.start()
 
     async def on_record(self) -> None:
