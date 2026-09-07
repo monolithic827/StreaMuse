@@ -321,6 +321,12 @@ panel still receives the version as a number: nothing validates it there.
   as "audio buffer overran"), and settled into a permanent partial lag for the rest of the track
   rather than a one-off startup delay. Priming first lets that churn resolve before the clock has
   anything to be "behind" against.
+- **`_fetch()`'s cover download catches `TimeoutError` alongside `aiohttp.ClientError`** - the
+  session's own timeout raises the former, which is not a subclass of the latter, so a slow or
+  unreachable thumbnail host would otherwise escape the `except` entirely. By the point `load()`
+  calls this, the track is already marked playing and its decoder has not started yet, so an
+  uncaught exception here would crash `load()` with the panel showing "Playing" and no audio ever
+  actually starting. Reproduced live under a flaky connection.
 - **`Decoder.stop()` explicitly closes `process._transport`.** One track is one `Decoder`, so this
   runs on every track change rather than once per stream session - killing the process and letting
   its stdin/stdout/stderr pipe transports get cleaned up by their own `__del__` (as ffmpeg.py's

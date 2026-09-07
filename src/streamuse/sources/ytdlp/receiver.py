@@ -123,9 +123,13 @@ class YtDlpReceiver(Receiver):
 
 
 async def _fetch(url: str) -> bytes | None:
+    """A failed cover fetch must never take the track down with it - load() already has the track
+    playing by the time this runs, and TimeoutError (from the session's own timeout) isn't a
+    ClientError, so a slow host would otherwise escape this and crash load() with audio never
+    actually started."""
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=THUMBNAIL_TIMEOUT)) as session:
             async with session.get(url) as reply:
                 return await reply.read() if reply.status == 200 else None
-    except aiohttp.ClientError:
+    except (aiohttp.ClientError, TimeoutError):
         return None
