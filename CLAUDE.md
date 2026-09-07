@@ -107,10 +107,22 @@ is unchanged; ffmpeg does the conversion. Do not resample in Python - the pacer 
 
 **Two ports, and this is a security boundary.** The control API, WebSocket, settings and log live on
 the control port (7788) and must never appear on the other one. Only the public port (7789) is handed
-to cloudflared, and everything it serves sits under `/live/{streamKey}/`, is GET or HEAD only, and is
-one of: the HLS playlist and segments, the listener page's own files out of `wwwroot/listen/`, `now`
-(current track as JSON) and `art`. Everything else 404s, including traversal attempts. They are two
-separate aiohttp applications on two runners, so the boundary is structural rather than a guard.
+to cloudflared, and everything it serves sits under `/live/{streamKey}/` and is one of: the HLS
+playlist and segments, the listener page's own files out of `wwwroot/listen/`, `now` (current track
+as JSON), `art`, `search` and `request`. Everything else 404s, including traversal attempts. They
+are two separate aiohttp applications on two runners, so the boundary is structural rather than a
+guard.
+
+`request` is the **one write on the public port and the only POST**, and no other name answers one.
+It and `search` both need `songRequests` on *and* the encoder running, or they 404 like anything
+else that is not on the list - so the default install exposes exactly what it always did. Each is
+rate limited per address by a `Cooldown`, because one spammer must not be what gets the host's
+Spotify account throttled or the machine blocked by Apple. The address is `CF-Connecting-IP`: this
+port is bound to loopback, so `request.remote` is always cloudflared, and Cloudflare overwrites that
+header itself rather than passing the client's. Nothing a listener sends is trusted further than a
+strict id match in the receiver (`spotify:track:` plus 22 alphanumerics, or an all-digit trackId),
+and the title that rides along for the log has its non-printables stripped so it cannot forge a
+second log line.
 
 The public surface must never serialize the state snapshot. That snapshot carries
 `namedTunnelToken` - a Cloudflare credential - along with dependency paths that leak the Windows
@@ -122,6 +134,11 @@ encoder's (separate buttons, plus `autoTunnel`), so with the stream stopped `now
 off-air record and `art` 404s; otherwise anyone holding the hostname could poll what the machine
 plays locally. Do not move that gate into the page: `streamKey` defaults to a constant, so the URL is
 not a secret either.
+
+The listener page needs to know what its request button will do, so `now` carries `requests` as
+`"queue"`, `"play"` or `""` - the receiver's own `request_action`, never wording. It does tell the
+public which service the host streams from; that is the minimum needed for the button to be honest
+about interrupting, and the host opted in by enabling the feature.
 
 Nothing on the wire carries a display placeholder. `NowPlaying` holds `""` for a field the source did
 not report, and each of the three views - the panel, the video, the listener page - supplies its own
@@ -219,6 +236,14 @@ panel still receives the version as a number: nothing validates it there.
   that takes it would otherwise crash the session on an ALAC decoder it never announced.
 - A failed ANNOUNCE must release the session. Otherwise the connection stays the owner and the SETUP
   that follows runs against parameters that were rejected.
+- **There is no Apple queue to write to.** The Apple Music app for Windows is not scriptable - the
+  COM interface died with iTunes - and DACP carries nothing past `playpause`, `nextitem` and
+  `previtem`, so a listener request is a `music:` handoff (`sources/airplay/itunes.py`) that starts
+  the track rather than lining it up: `request_action` is `"play"`, not `"queue"`. Search is the
+  public iTunes Search API, which needs no key and no account. Whether the handoff *plays* or only
+  opens the app at that track has not been measured on a real machine yet; if it turns out to only
+  navigate, `DacpClient` fired straight after may finish the job - `play` was a live verb in
+  `COMMANDS` until commit `295f43e`.
 - Metadata arrives as DMAP over SET_PARAMETER. The Apple apps have been seen packing `artist — album`
   into the artist field with the album empty; that split only fires when the album is genuinely empty,
   because the result is burned into the outgoing video, and it logs when it does so it can be deleted
@@ -257,6 +282,12 @@ panel still receives the version as a number: nothing validates it there.
   Sized close to what a real hardware buffer would hold instead, `Write()` blocks almost immediately,
   so go-librespot can never get more than a fraction of a second ahead of what has actually reached
   `AudioPacer`.
+- **Song requests need nothing registered and nobody logged in.** `POST /token` hands back an access
+  token for the session the desktop app already gave the daemon over zeroconf, which is enough for
+  `api.spotify.com/v1/search`, and `POST /player/add_to_queue` is literally "play next" - Spotify
+  runs its queue ahead of the rest of the context. The token is cached in `LibrespotApi` and dropped
+  only on a 401, because the daemon's handler calls `GetAccessToken(ctx, force=true)` and an
+  uncached call is a real login5 round trip for every search a listener types.
 - `external_volume: true` keeps the broadcast at full scale; Spotify's slider is the listener's
   business, not ours. The AirPlay side ignores its `volume:` messages for the same reason.
 - Password login is gone from Spotify. Credentials arrive by the desktop app handing off over
@@ -361,7 +392,15 @@ details drawer opens.
 The **Spotify** path has never run end to end: it needs the patched go-librespot binary described in
 `vendor/go-librespot/README.md`, and no release carries it yet. Everything up to that binary - the
 config, the process wrapper, the named pipe reader, the API client - is written and the pipe reader
-is verified against synthetic writers, including reconnect cycles.
+is verified against synthetic writers, including reconnect cycles. **Song requests** are unverified
+on both sides for the same reason: the public endpoints, the cooldowns and the off-air gating are
+checked against a fake source, and Apple's half of it resolves real tracks out of the iTunes Search
+API, but neither `add_to_queue` nor the `music:` handoff has been watched actually move a queue.
+
+`/token` and `/player/add_to_queue` are on go-librespot v0.9.0, which is what `LIBRESPOT_REF` pins,
+and both survive into master - so the bump `vendor/go-librespot/README.md` anticipates keeps them.
+Its `/web-api/` proxy does **not**: it exists only in v0.9.0 and was gone by v0.9.1, which is why
+search goes through `/token` and calls Spotify itself rather than proxying.
 
 The **AirPlay** path is verified end to end against a synthetic RAOP sender that performs the real
 handshake and streams real AES-encrypted ALAC: challenge signing, key unwrap, SETUP, RECORD, DMAP

@@ -2,16 +2,23 @@
 
 Everything the panel shows about a Spotify track arrives pushed on the socket, so nothing here
 polls; /status is only read on connect to resync after a reconnection.
+
+Searching also runs through here: the daemon's /token hands out an access token for the session the
+desktop app already handed over, so listener requests need nothing registered and nobody logged in.
 """
 
 import asyncio
 
 import aiohttp
 
+from .. import RequestTrack
+
 RECONNECT_DELAY = 2
 REQUEST_TIMEOUT = 5
 
 COMMANDS = {"playpause": "playpause", "next": "next", "prev": "prev"}
+
+SEARCH_URL = "https://api.spotify.com/v1/search"
 
 
 class LibrespotApi:
@@ -21,6 +28,7 @@ class LibrespotApi:
         self._on_event = on_event
         self._session: aiohttp.ClientSession | None = None
         self._task: asyncio.Task | None = None
+        self._token: str | None = None
 
     async def start(self) -> None:
         self._session = aiohttp.ClientSession(
@@ -45,6 +53,65 @@ class LibrespotApi:
         except aiohttp.ClientError as exc:
             self._hub.warn(f"spotify: command failed ({exc})")
             return False
+
+    async def add_to_queue(self, uri: str) -> bool:
+        if self._session is None:
+            return False
+        try:
+            async with self._session.post(
+                f"{self._base}/player/add_to_queue", json={"uri": uri}
+            ) as reply:
+                return reply.status < 400
+        except aiohttp.ClientError as exc:
+            self._hub.warn(f"spotify: could not queue the track ({exc})")
+            return False
+
+    async def search(self, query: str) -> RequestTrack | None:
+        """One retry, because the cached token is only ever discovered to be stale by being
+        refused."""
+        for _ in range(2):
+            token = await self._token_for_search()
+            if token is None:
+                return None
+
+            try:
+                async with self._session.get(
+                    SEARCH_URL,
+                    params={"q": query, "type": "track", "limit": "1"},
+                    headers={"Authorization": f"Bearer {token}"},
+                ) as reply:
+                    if reply.status == 401:
+                        self._token = None
+                        continue
+                    if reply.status != 200:
+                        self._hub.warn(f"spotify: search failed ({reply.status})")
+                        return None
+                    return _first_track(await reply.json())
+            except aiohttp.ClientError as exc:
+                self._hub.warn(f"spotify: search failed ({exc})")
+                return None
+
+        return None
+
+    async def _token_for_search(self) -> str | None:
+        """Cached: the daemon forces a fresh login5 round trip on every call, and a listener page
+        can ask for a search far more often than a token needs replacing."""
+        if self._token is not None:
+            return self._token
+        if self._session is None:
+            return None
+
+        try:
+            async with self._session.post(f"{self._base}/token") as reply:
+                # 204 is the daemon saying there is no session yet, so there is nobody to search as.
+                if reply.status != 200:
+                    return None
+                self._token = (await reply.json()).get("token") or None
+        except aiohttp.ClientError as exc:
+            self._hub.warn(f"spotify: could not get an access token ({exc})")
+            return None
+
+        return self._token
 
     async def fetch_cover(self, url: str) -> bytes | None:
         if self._session is None:
@@ -93,3 +160,22 @@ class LibrespotApi:
                     await self._on_event("status", await reply.json())
         except aiohttp.ClientError:
             pass
+
+
+def _first_track(payload: dict) -> RequestTrack | None:
+    items = (payload.get("tracks") or {}).get("items") or []
+    if not items:
+        return None
+
+    track = items[0]
+    album = track.get("album") or {}
+    images = album.get("images") or []
+
+    return RequestTrack(
+        id=track.get("uri") or "",
+        title=track.get("name") or "",
+        artist=", ".join(a.get("name") or "" for a in track.get("artists") or []),
+        album=album.get("name") or "",
+        # Largest first, and the page wants a thumbnail.
+        artUrl=images[-1].get("url") or "" if images else "",
+    )

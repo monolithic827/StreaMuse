@@ -38,6 +38,9 @@ class Settings:
     namedTunnelHostname: str = ""
     autoTunnel: bool = True
 
+    #: Opens the only write on the public port, so it stays off until the host asks for it.
+    songRequests: bool = False
+
     logExpanded: bool = False
     theme: str = "Auto"
 

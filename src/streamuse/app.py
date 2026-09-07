@@ -68,7 +68,7 @@ def build(hub, settings, control_port: int, public_port: int):
 
     control_app = control.build_app(
         hub, deps, artwork, settings, pipeline, tunnel, sources, public_port)
-    public_app = public.build_app(hub, artwork, settings)
+    public_app = public.build_app(hub, artwork, settings, sources)
 
     return artwork, deps, tunnel, pipeline, sources, control_app, public_app
 

@@ -51,6 +51,32 @@
 
     </section>
 
+    <section class="requests" id="requests" hidden>
+
+      <form class="ask" id="ask">
+        <input class="q" id="q" type="text" maxlength="120" autocomplete="off"
+               placeholder="Request a song" aria-label="Request a song">
+        <button class="go" type="submit" id="go">Search</button>
+      </form>
+
+      <p class="note" id="note" hidden></p>
+
+      <div class="result blueprint" id="result" hidden>
+        <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+        <img class="thumb" id="thumb" alt="" hidden>
+        <div class="found">
+          <p class="found-title" id="found-title"></p>
+          <p class="found-artist" id="found-artist"></p>
+          <p class="found-album" id="found-album"></p>
+        </div>
+        <div class="choices">
+          <button class="go" type="button" id="queue"></button>
+          <button class="drop" type="button" id="discard">Discard</button>
+        </div>
+      </div>
+
+    </section>
+
   </main>
 
   <script src="listen.js?v={v}"></script>

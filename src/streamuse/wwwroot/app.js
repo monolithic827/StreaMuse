@@ -371,6 +371,7 @@ function fillSettings() {
   document.getElementById('set-token').value = settings.namedTunnelToken;
   document.getElementById('set-host').value = settings.namedTunnelHostname;
   document.getElementById('set-autotunnel').checked = settings.autoTunnel;
+  document.getElementById('set-requests').checked = settings.songRequests;
 
   const resolution = settings.width + 'x' + settings.height;
   for (const radio of document.querySelectorAll('input[name="res"]')) {
@@ -407,7 +408,8 @@ function readSettings() {
     tunnelMode: (document.querySelector('input[name="tmode"]:checked') || {}).value || 'Quick',
     namedTunnelToken: document.getElementById('set-token').value.trim(),
     namedTunnelHostname: document.getElementById('set-host').value.trim(),
-    autoTunnel: document.getElementById('set-autotunnel').checked
+    autoTunnel: document.getElementById('set-autotunnel').checked,
+    songRequests: document.getElementById('set-requests').checked
   };
 }
 

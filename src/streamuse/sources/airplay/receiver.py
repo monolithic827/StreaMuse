@@ -8,9 +8,9 @@ source.
 
 import time
 
-from .. import Receiver, TrackState
+from .. import Receiver, RequestTrack, TrackState
 from ...artwork import content_type_of
-from . import dmap
+from . import dmap, itunes
 from .alac import AlacDecoder, PcmDecoder
 from .dacp import DacpClient
 from .mdns import RaopAdvertisement, hardware_address
@@ -29,6 +29,9 @@ SILENCE_TIMEOUT = 1.0
 
 class AirPlayReceiver(Receiver):
     source = "apple"
+
+    #: There is no queue to write to on Windows, so a request starts playing - see itunes.py.
+    request_action = "play"
 
     def __init__(self, settings, hub, artwork) -> None:
         self._settings = settings
@@ -109,6 +112,12 @@ class AirPlayReceiver(Receiver):
     async def control(self, command: str) -> bool:
         advertisement = self._advertisement
         return await self._dacp.send(command, advertisement.zeroconf if advertisement else None)
+
+    async def search(self, query: str) -> RequestTrack | None:
+        return await itunes.search(query, self._hub)
+
+    async def enqueue(self, track_id: str) -> bool:
+        return itunes.play(track_id)
 
     # The RTSP server calls these as the sender drives the session.
 

@@ -18,8 +18,22 @@ const el = {
   progress: document.getElementById('progress'),
   fill: document.getElementById('fill'),
   elapsed: document.getElementById('elapsed'),
-  duration: document.getElementById('duration')
+  duration: document.getElementById('duration'),
+  requests: document.getElementById('requests'),
+  ask: document.getElementById('ask'),
+  q: document.getElementById('q'),
+  search: document.getElementById('go'),
+  note: document.getElementById('note'),
+  result: document.getElementById('result'),
+  thumb: document.getElementById('thumb'),
+  foundTitle: document.getElementById('found-title'),
+  foundArtist: document.getElementById('found-artist'),
+  foundAlbum: document.getElementById('found-album'),
+  queue: document.getElementById('queue'),
+  discard: document.getElementById('discard')
 };
+
+const QUEUE_LABELS = { queue: 'Play next', play: 'Play now' };
 
 let track = null;
 let receivedAt = 0;
@@ -27,6 +41,8 @@ let lastPoll = 0;
 let polling = false;
 let artVersion = null;
 let reachable = false;
+let found = null;
+let busy = false;
 
 function time(seconds) {
   if (!(seconds > 0)) return '0:00';
@@ -89,6 +105,8 @@ function render() {
   el.status.dataset.live = live ? 'true' : 'false';
   el.statusText.textContent = !reachable ? 'Unreachable' : live ? 'Live' : 'Off air';
 
+  renderRequests(live);
+
   if (!live) {
     el.eyebrow.textContent = reachable ? 'Nothing streaming' : 'Lost contact';
     el.title.textContent = reachable ? 'Off air' : 'Trying to reconnect…';
@@ -109,6 +127,95 @@ function render() {
   renderArt(track.artworkVersion);
   renderProgress();
 }
+
+/* The host says what the button will do - "queue" lines the track up behind the current one, "play"
+   starts it - and the wording for each lives here, so nothing on the wire is display text. */
+function renderRequests(live) {
+  const action = live ? track.requests : '';
+
+  el.requests.hidden = !action;
+  if (action) el.queue.textContent = QUEUE_LABELS[action] || 'Request';
+}
+
+function say(text) {
+  el.note.textContent = text;
+  el.note.hidden = !text;
+}
+
+function showResult(result) {
+  found = result;
+  el.result.hidden = !result;
+  if (!result) return;
+
+  el.foundTitle.textContent = result.title;
+  el.foundArtist.textContent = result.artist;
+  el.foundAlbum.textContent = result.album;
+
+  el.thumb.hidden = !result.artUrl;
+  if (result.artUrl) el.thumb.src = result.artUrl;
+}
+
+/* Deliberately outside the poll cycle: a result the listener is still deciding on has to survive
+   the re-render that happens under it every two seconds. */
+async function ask(path, options) {
+  busy = true;
+  el.search.disabled = el.queue.disabled = el.discard.disabled = true;
+
+  try {
+    const response = await fetch(path, options);
+    return { ok: response.ok, body: await response.json().catch(() => ({})) };
+  } catch {
+    return { ok: false, body: {} };
+  } finally {
+    busy = false;
+    el.search.disabled = el.queue.disabled = el.discard.disabled = false;
+  }
+}
+
+// The buttons are disabled while a call is in flight, but Enter in the field is not, so the form
+// needs the guard of its own.
+el.ask.addEventListener('submit', async event => {
+  event.preventDefault();
+
+  const query = el.q.value.trim();
+  if (!query || busy) return;
+
+  showResult(null);
+  say('Searching…');
+
+  const { ok, body } = await ask(`search?q=${encodeURIComponent(query)}`);
+
+  if (!ok) return say(body.error || 'Requests are closed right now.');
+  if (!body.found) return say('Nothing matched that.');
+
+  say('');
+  showResult(body);
+});
+
+el.queue.addEventListener('click', async () => {
+  if (!found) return;
+
+  const done = track.requests === 'play' ? `Playing ${found.title}` : `Queued ${found.title}`;
+
+  const { ok, body } = await ask('request', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: found.id, title: found.title })
+  });
+
+  if (!ok) return say(body.error || 'That did not go through.');
+
+  showResult(null);
+  el.q.value = '';
+  say(done);
+});
+
+el.discard.addEventListener('click', () => {
+  showResult(null);
+  say('');
+  el.q.focus();
+  el.q.select();
+});
 
 /* One at a time, and the interval is counted from the response: a request slower than POLL_MS would
    otherwise have a second one started under it, and the two can land out of order - stamping stale
