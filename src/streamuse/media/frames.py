@@ -11,12 +11,7 @@ from bidi import get_display
 from fontTools.ttLib import TTFont
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-from ..state import NowPlaying
-
 JPEG_QUALITY = 88
-
-REQUESTED_PILL = (0x94, 0xBC, 0xE3, 0xFF)
-REQUESTED_TEXT = (0x10, 0x12, 0x14, 0xFF)
 
 DEFAULT_BACKGROUND = (0x1D, 0x1F, 0x20)
 PLACEHOLDER_FILL = (0x2B, 0x2B, 0x2D)
@@ -39,10 +34,9 @@ _BODY_FONTS = [("segoeui.ttf", 0), ("YuGothR.ttc", 0), ("Nirmala.ttc", 0), *_SPE
 
 
 class CoverFrameRenderer:
-    def __init__(self, settings, artwork, hub, dj) -> None:
+    def __init__(self, settings, artwork, hub) -> None:
         self._artwork = artwork
         self._hub = hub
-        self._dj = dj
 
         self._width = settings.width
         self._height = settings.height
@@ -57,7 +51,6 @@ class CoverFrameRenderer:
 
         self._decoded: Image.Image | None = None
         self._decoded_version = -1
-        self._decoded_source = None
         self._background = DEFAULT_BACKGROUND
         #: The blur dominates the frame cost and only changes with the cover, so the composed
         #: ground is kept while the text above it is redrawn.
@@ -68,19 +61,7 @@ class CoverFrameRenderer:
 
     def render(self) -> bytes:
         """Current frame as JPEG, re-rendered only when something visible changed."""
-        dj_state = self._dj.snapshot()
-        playing = dj_state.nowMixing
-        mixing = playing is not None
-
-        if mixing:
-            now = NowPlaying(playing.title, playing.artist, dj_state.album, True,
-                             dj_state.positionSeconds, dj_state.durationSeconds,
-                             dj_state.artworkVersion)
-            artwork = self._dj.artwork
-        else:
-            now = self._hub.now_playing
-            artwork = self._artwork
-
+        now = self._hub.now_playing
         progress = (
             min(1.0, max(0.0, now.positionSeconds / now.durationSeconds))
             if now.durationSeconds > 0 else 0.0
@@ -88,27 +69,27 @@ class CoverFrameRenderer:
 
         # Quantised so a static track does not force a re-encode every frame.
         signature = "|".join(str(part) for part in (
-            mixing, artwork.version, now.title, now.artist, now.album, int(progress * 600)))
+            self._artwork.version, now.title, now.artist, now.album, int(progress * 600)))
 
         if self._last_frame is not None and signature == self._last_signature:
             return self._last_frame
 
-        self._last_frame = self._render_frame(now, progress, artwork, mixing)
+        self._last_frame = self._render_frame(now, progress)
         self._last_signature = signature
         return self._last_frame
 
-    def _render_frame(self, now, progress: float, artwork, mixing: bool) -> bytes:
-        frame = self._ensure_ground(artwork).copy()
+    def _render_frame(self, now, progress: float) -> bytes:
+        frame = self._ensure_ground().copy()
 
         if self._overlay:
-            self._draw_text(frame, now, progress, mixing)
+            self._draw_text(frame, now, progress)
 
         buffer = io.BytesIO()
         frame.save(buffer, format="JPEG", quality=JPEG_QUALITY, subsampling=0)
         return buffer.getvalue()
 
-    def _ensure_ground(self, artwork) -> Image.Image:
-        self._ensure_artwork_decoded(artwork)
+    def _ensure_ground(self) -> Image.Image:
+        self._ensure_artwork_decoded()
         if self._ground is not None:
             return self._ground
 
@@ -137,7 +118,7 @@ class CoverFrameRenderer:
         shade = Image.new("RGBA", (width, height), SHADE)
         ground.paste(shade, (0, 0), shade)
 
-    def _draw_text(self, frame: Image.Image, now, progress: float, mixing: bool) -> None:
+    def _draw_text(self, frame: Image.Image, now, progress: float) -> None:
         width, height = self._width, self._height
         left = self._art_box[2] + width * 0.045
         right = width - width * 0.05
@@ -149,23 +130,6 @@ class CoverFrameRenderer:
         draw = ImageDraw.Draw(layer)
 
         y = self._art_box[1] + height * 0.10
-
-        if mixing:
-            # Dropped-in audio otherwise looks identical to normal playback in the frame.
-            label = "REQUESTED"
-            pad_x, pad_y = width * 0.012, height * 0.006
-            pill_height = self._small.size + pad_y * 2
-            pill_top = self._art_box[1] + height * 0.02
-            pill_width = self._small.width(label) + pad_x * 2
-            draw.rounded_rectangle(
-                (left, pill_top, left + pill_width, pill_top + pill_height),
-                radius=pill_height * 0.3, fill=REQUESTED_PILL)
-            self._small.draw(draw, (left + pad_x, pill_top + pad_y), label, REQUESTED_TEXT,
-                             anchor="la")
-
-            # Pushed down by the title font's own ascent (not a guessed constant) so its cap-height
-            # clears the pill above it - at the unmodified y they visibly overlapped.
-            y = max(y, pill_top + pill_height + self._title.ascent + height * 0.015)
 
         title = now.title or "Nothing playing"
         self._title.draw(draw, (left, y), _rtl(title, self._title, available), BRIGHT)
@@ -193,18 +157,17 @@ class CoverFrameRenderer:
 
         frame.paste(layer, (0, 0), layer)
 
-    def _ensure_artwork_decoded(self, artwork) -> None:
-        version = artwork.version
-        if version == self._decoded_version and artwork is self._decoded_source:
+    def _ensure_artwork_decoded(self) -> None:
+        version = self._artwork.version
+        if version == self._decoded_version:
             return
 
         self._decoded_version = version
-        self._decoded_source = artwork
         self._decoded = None
         self._ground = None
         self._background = DEFAULT_BACKGROUND
 
-        data = artwork.bytes
+        data = self._artwork.bytes
         if not data:
             return
 
@@ -250,22 +213,16 @@ class _FontStack:
     substitutes nothing of its own - see CLAUDE.md."""
 
     def __init__(self, specs, size: float) -> None:
-        self.size = size
         self._fonts = [(ImageFont.truetype(path, size, index=index), _cmap(path, index))
                        for name, index in specs if (path := _FONTS / name).is_file()]
-
-    @property
-    def ascent(self) -> float:
-        """The primary font's, which is what text is laid out against even when a run falls back."""
-        return self._fonts[0][0].getmetrics()[0]
 
     def width(self, text: str) -> float:
         return sum(font.getlength(run) for font, run in self._runs(text))
 
-    def draw(self, draw, xy, text: str, fill, anchor: str = "ls") -> None:
+    def draw(self, draw, xy, text: str, fill) -> None:
         x, y = xy
         for font, run in self._runs(text):
-            draw.text((x, y), run, font=font, fill=fill, anchor=anchor)
+            draw.text((x, y), run, font=font, fill=fill, anchor="ls")
             x += font.getlength(run)
 
     def _runs(self, text: str):

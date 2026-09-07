@@ -5,10 +5,9 @@ from dataclasses import asdict, dataclass, fields
 
 from . import paths
 
-SOURCES = ("apple", "spotify", "device")
+SOURCES = ("apple", "spotify")
 TUNNEL_MODES = ("Quick", "Named")
 THEMES = ("Auto", "Dark", "Light")
-DJ_MODES = ("radio", "rave")
 
 
 @dataclass
@@ -42,22 +41,6 @@ class Settings:
     logExpanded: bool = False
     theme: str = "Auto"
 
-    djCrossfadeSeconds: float = 8.0
-    djSfxEnabled: bool = True
-
-    #: "radio" only ever mixes in what's requested. "rave" also picks its own next track from the
-    #: learned library once nothing's queued, instead of falling back to the captured app.
-    djMode: str = "radio"
-
-    #: How many tracks the library analyzes at once when learning a playlist. Bounded, not unbounded
-    #: - too many concurrent yt-dlp downloads reads as automated abuse to YouTube's own side.
-    djLibraryConcurrency: int = 4
-
-    #: A WASAPI loopback device name for the "device" source. Empty means none picked yet - unlike
-    #: receiverName/spotifyConnectDeviceName this has no fallback default, since an empty value is a
-    #: real, distinct state (DeviceReceiver.available reports it as "pick one in Settings first").
-    deviceCaptureName: str = ""
-
     def normalized(self) -> "Settings":
         """Clamps anything a hand-edited file (or a stale schema) could have made invalid."""
         self.source = self.source if self.source in SOURCES else "apple"
@@ -71,10 +54,6 @@ class Settings:
         self.audioBitrateKbps = _clamp(self.audioBitrateKbps, 64, 512)
         self.tunnelMode = self.tunnelMode if self.tunnelMode in TUNNEL_MODES else "Quick"
         self.theme = self.theme if self.theme in THEMES else "Auto"
-        self.djCrossfadeSeconds = _clamp_float(self.djCrossfadeSeconds, 2.0, 30.0)
-        self.deviceCaptureName = (self.deviceCaptureName or "").strip()[:255]
-        self.djMode = self.djMode if self.djMode in DJ_MODES else "radio"
-        self.djLibraryConcurrency = _clamp(self.djLibraryConcurrency, 1, 12)
         return self
 
     def apply(self, other: "Settings") -> None:
@@ -127,10 +106,6 @@ def from_dict(raw: dict) -> Settings:
 
 
 def _clamp(value: int, low: int, high: int) -> int:
-    return max(low, min(high, value))
-
-
-def _clamp_float(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
