@@ -291,11 +291,36 @@ panel still receives the version as a number: nothing validates it there.
   SoundCloud's CDNs answer 403 - verified end to end against both.
 - **ffmpeg decoding a network URL runs far faster than playback**, so draining its stdout as fast as
   bytes arrive would hand the pacer a whole track in a few seconds, same as the Spotify pipe failure
-  this same section already describes. `sources/ytdlp/decoder.py` paces the drain to real time the
+  this same section already describes. `sources/ytdlp/decoder.py` paces its output to real time the
   same way `PipeReader` does, but natively async - ffmpeg's stdout is already a non-blocking asyncio
-  pipe, so no thread is needed. Pausing it (`playpause`) stops reading rather than stopping ffmpeg:
-  the pipe is small enough that ffmpeg's own write then blocks, back-pressuring the decode exactly
-  the way a small pipe buffer throttles go-librespot.
+  pipe, so no thread is needed.
+- **Reading and pacing are two separate tasks, not one, because fetching over the internet stalls in
+  a way a local named pipe or RTP stream never does** - a CDN throttling the connection, or ffmpeg's
+  own `-reconnect` waiting out a dropped one. Pacing directly off stdout (the first cut of this, and
+  what `PipeReader` still does) has nothing to absorb a stall with: it reaches the sink as silence
+  immediately, which is what "audio pauses for a moment, then falls behind" turned out to be -
+  reproduced by loading a real track and logging delivery gaps, and fixed by adding the second task.
+  `_reader` fills a bounded queue as fast as ffmpeg produces data - unthrottled beyond the queue's own
+  capacity, so a fast stretch banks several seconds of read-ahead - and `_drain` paces its way through
+  that queue on its own clock, decoupled from when each chunk actually arrived. Measured: mid-track,
+  the queue holds 4-6 seconds banked even though `_drain` never runs ahead of real time itself - that
+  banked cushion is what a stall now drains before anything reaches the sink as silence. `QUEUE_SIZE`
+  costs nothing worth counting in memory for how much it buys. Pausing (`playpause`) stops `_drain`,
+  not `_reader`: the queue fills first, and only once it is full does `_reader` stop draining stdout -
+  at that point ffmpeg's own stdout pipe fills too and back-pressures the decode, the same role a
+  small pipe buffer plays for go-librespot, just reached later than before.
+- The EOF marker `_reader` puts on a real end of stream travels through the same queue as the audio
+  ahead of it, so `_drain` - and therefore `on_finished` - only sees it after pacing out everything
+  queued first. Firing `on_finished` the moment ffmpeg's stdout closes, the way it worked pre-queue,
+  would advance to the next track while several seconds of the current one were still unplayed.
+- **`Decoder.stop()` explicitly closes `process._transport`.** One track is one `Decoder`, so this
+  runs on every track change rather than once per stream session - killing the process and letting
+  its stdin/stdout/stderr pipe transports get cleaned up by their own `__del__` (as ffmpeg.py's
+  encoder and Spotify's `LibrespotProcess` still do, being long-lived enough that it was never worth
+  chasing) means whichever track ends the session leaves them for the garbage collector, which on
+  the Windows proactor loop tries to format an "unclosed transport" warning against a socket that is
+  by then already invalid and prints an ugly traceback failing to do it - reproducible on every track
+  change, confirmed gone once this closes the transport explicitly instead.
 - yt-dlp's own error reporting prints straight to the console even with `quiet`/`no_warnings` set,
   ahead of raising - a caller that already turns the same exception into `hub.error` would otherwise
   show it twice, once outside the log. `extractor._SilentLogger` is the documented way to fully
@@ -407,5 +432,11 @@ running them.
 The **yt-dlp** path is verified end to end against real YouTube and SoundCloud, including a search
 query, resolving a real signed URL, ffmpeg decoding it with the required headers, real-time pacing,
 pause/resume back-pressuring the decode, and both a bad URL and a bad cookies file failing cleanly
-without taking the receiver down. Not yet exercised: a cookies file that actually unlocks
-age-restricted or private content, since verifying that needs a real account's exported cookies.
+without taking the receiver down. The read-ahead queue is verified too: mid-track it measurably holds
+several seconds banked ahead of real-time consumption, and pause/resume/next/natural-finish all still
+behave the same as before it was added; so is the "unclosed transport" fix, confirmed gone across a
+real multi-track-transition run. Not yet exercised: a cookies file that actually unlocks
+age-restricted or private content, since verifying that needs a real account's exported cookies; and
+a real multi-second CDN stall specifically, since nothing here can inject one to order - the read-ahead
+fix is verified by what it measurably does (bank read-ahead) rather than by forcing the stall it is
+meant to absorb.

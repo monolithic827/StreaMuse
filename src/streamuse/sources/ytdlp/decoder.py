@@ -2,10 +2,17 @@
 
 ffmpeg decodes across the network far faster than playback, so an unpaced drain of its stdout
 would hand the pacer a whole track in a few seconds - the same failure the Spotify pipe reader
-exists to avoid (see CLAUDE.md). This paces the drain to real time the same way, and since it is
-this side that is slow to read rather than ffmpeg that is slow to write, pausing it lets ffmpeg's
-own stdout pipe fill and back-pressure the decode - the same role a real device's small hardware
-buffer plays for go-librespot.
+exists to avoid (see CLAUDE.md). Draining is paced to real time the same way, but reading is not:
+a `_reader` task fills a bounded queue as fast as ffmpeg produces data, and `_drain` paces its way
+through that queue on its own clock. Fetching over the internet stalls in a way a local named pipe
+or RTP stream never does - a CDN throttling the connection, or ffmpeg's own `-reconnect` waiting out
+a dropped one - and pacing straight off stdout has nothing to absorb that with: the stall reaches
+the sink as silence immediately. The queue is the absorber; several seconds of it costs nothing
+worth counting in memory. Pausing (`playpause`) stops `_drain` rather than `_reader`, so the queue
+fills first and only once it is full does `_reader` stop draining stdout - at that point ffmpeg's
+own stdout pipe fills too and back-pressures the decode, the same role a real device's small
+hardware buffer plays for go-librespot; the queue just means a short pause no longer starts that
+chain immediately.
 """
 
 import asyncio
@@ -20,6 +27,11 @@ CREATE_NO_WINDOW = 0x08000000
 
 FRAME_BYTES = 4  # s16le stereo
 READ_SIZE = 1 << 16
+
+#: How much read-ahead the queue holds, in seconds of audio - the cushion a network stall drains
+#: before it reaches the sink as silence.
+QUEUE_SECONDS = 8.0
+QUEUE_SIZE = max(1, round(QUEUE_SECONDS / (READ_SIZE / FRAME_BYTES / SAMPLE_RATE)))
 
 #: How far ahead of real time the drain may run before it throttles.
 LEAD_SECONDS = 0.2
@@ -48,8 +60,10 @@ class Decoder:
     def __init__(self, hub) -> None:
         self._hub = hub
         self._process: asyncio.subprocess.Process | None = None
-        self._pump_task: asyncio.Task | None = None
+        self._reader_task: asyncio.Task | None = None
+        self._drain_task: asyncio.Task | None = None
         self._log_task: asyncio.Task | None = None
+        self._queue: asyncio.Queue = asyncio.Queue(maxsize=QUEUE_SIZE)
         self._resume = asyncio.Event()
         self._resume.set()
         #: Called once the track ends or the decode fails - never on a deliberate stop().
@@ -64,7 +78,8 @@ class Decoder:
             creationflags=CREATE_NO_WINDOW,
         )
         jobs.adopt(self._process)
-        self._pump_task = asyncio.create_task(self._pump(on_pcm))
+        self._reader_task = asyncio.create_task(self._reader())
+        self._drain_task = asyncio.create_task(self._drain(on_pcm))
         self._log_task = asyncio.create_task(self._read_log(self._process.stderr))
 
     def pause(self) -> None:
@@ -76,12 +91,10 @@ class Decoder:
     async def stop(self) -> None:
         process, self._process = self._process, None
         self.on_finished = None
-        if self._pump_task is not None:
-            self._pump_task.cancel()
-            self._pump_task = None
-        if self._log_task is not None:
-            self._log_task.cancel()
-            self._log_task = None
+        for task in (self._reader_task, self._drain_task, self._log_task):
+            if task is not None:
+                task.cancel()
+        self._reader_task = self._drain_task = self._log_task = None
 
         if process is None:
             return
@@ -90,16 +103,40 @@ class Decoder:
             await asyncio.wait_for(process.wait(), 3)
         except (OSError, ProcessLookupError, TimeoutError):
             pass
+        finally:
+            # A killed process's stdin/stdout/stderr pipe transports are otherwise only closed by
+            # their own __del__ once nothing references them - which, on the Windows proactor loop,
+            # tries to format an "unclosed transport" warning against a socket that is by then
+            # already invalid, and prints an ugly traceback doing it. One track is one Decoder, so
+            # this runs on every track change, not just at app shutdown.
+            with contextlib.suppress(Exception):
+                process._transport.close()
 
-    async def _pump(self, on_pcm) -> None:
+    async def _reader(self) -> None:
+        """Fills the queue as fast as ffmpeg produces data - unthrottled beyond the queue's own
+        capacity, so a fast stretch banks read-ahead for `_drain` to spend during a slow one."""
         stdout = self._process.stdout
+        try:
+            while True:
+                data = await stdout.read(READ_SIZE)
+                await self._queue.put(data)
+                if not data:
+                    return
+        except Exception as exc:
+            self._hub.warn(f"yt-dlp decode: reading stopped - {exc}")
+            # Awaited rather than put_nowait: _drain must see this EOF marker eventually, even if
+            # the queue happens to be full of read-ahead right now.
+            with contextlib.suppress(Exception):
+                await self._queue.put(b"")
+
+    async def _drain(self, on_pcm) -> None:
         tail = b""
         deadline = time.monotonic()
 
         try:
             while True:
                 await self._resume.wait()
-                data = await stdout.read(READ_SIZE)
+                data = await self._queue.get()
                 if not data:
                     return
 
