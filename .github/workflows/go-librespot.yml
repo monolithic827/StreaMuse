@@ -1,0 +1,104 @@
+name: go-librespot
+
+# Builds the patched go-librespot and publishes it under its own tag, which deps.GO_LIBRESPOT_URL
+# downloads at runtime. It is deliberately not part of the app build: the exe does not carry
+# go-librespot, so nothing about a StreaMuse release waits on or can ship without this.
+#
+# Upstream's Windows build stubs out the pipe backend, so no release of theirs carries a binary we
+# can use. This is upstream's own Windows job with our one-file patch applied - keep it in step with
+# theirs (.github/workflows/release.yml in devgianlu/go-librespot).
+#
+# Nothing triggers this on an ordinary push, so run it by hand (Actions -> go-librespot -> Run
+# workflow) the first time and whenever LIBRESPOT_REF changes.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  # The go-librespot release the pipe patch in vendor/go-librespot applies to. deps.GO_LIBRESPOT_REF
+  # must name the same one - it is what builds the download URL.
+  LIBRESPOT_REF: v0.9.0
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/checkout@v7
+        with:
+          repository: devgianlu/go-librespot
+          ref: ${{ env.LIBRESPOT_REF }}
+          path: go-librespot
+
+      - name: Apply the pipe patch
+        shell: bash
+        run: |
+          cp vendor/go-librespot/driver-pipe-windows.go go-librespot/output/driver-pipe-windows.go
+          # Both files define newPipeOutput.
+          rm go-librespot/output/driver-pipe-stub.go
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.25'
+          cache-dependency-path: go-librespot/go.sum
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-pkg-config
+            mingw-w64-x86_64-libogg
+            mingw-w64-x86_64-libvorbis
+            mingw-w64-x86_64-flac
+            mingw-w64-x86_64-mpg123
+          path-type: inherit
+
+      - name: Build
+        shell: msys2 {0}
+        env:
+          CGO_ENABLED: 1
+        run: |
+          export CC="$(cygpath -m "$(command -v gcc)")"
+          export PKG_CONFIG="$(cygpath -m "$(command -v pkg-config)")"
+          export PKG_CONFIG_PATH="$(cygpath -m /mingw64/lib/pkgconfig)"
+          export PATH="/mingw64/bin:${PATH}"
+
+          # libogg.dll.a omits ogg_stream_iovecin; forcing -logg onto libogg.a is upstream's fix.
+          if [ -f /mingw64/lib/libogg.dll.a ]; then
+            mv /mingw64/lib/libogg.dll.a /mingw64/lib/libogg.dll.a.unused
+          fi
+
+          mkdir -p out
+          cd go-librespot
+          go build -o ../out/go-librespot.exe -ldflags "-s -w" ./cmd/daemon
+
+          # CGO_ENABLED links these dynamically - see CLAUDE.md's Spotify section. They go in the
+          # archive with the exe because deps.py extracts the whole thing into BIN_DIR.
+          cp /mingw64/bin/{libmpg123-0,libFLAC,libvorbisenc-2,libvorbis-0,libogg-0,libwinpthread-1}.dll ../out/
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          Compress-Archive -Path out/* -DestinationPath go-librespot-win-x64.zip
+          $tag = "go-librespot-$env:LIBRESPOT_REF"
+
+          # Asked rather than attempted-and-ignored: this shell stops the step on any non-zero exit.
+          $tags = (gh release list --limit 100 --json tagName | ConvertFrom-Json).tagName
+          if ($tags -notcontains $tag) {
+            # --latest=false: this is a build artifact, not a StreaMuse release, and the README
+            # sends people to whatever release GitHub marks as the latest one.
+            gh release create $tag --latest=false `
+              --title "go-librespot $env:LIBRESPOT_REF (pipe patch)" `
+              --notes "Upstream go-librespot $env:LIBRESPOT_REF with vendor/go-librespot's pipe backend patch, plus the audio DLLs it links against. Downloaded on demand by deps.GO_LIBRESPOT_URL; not something to install by hand."
+          }
+
+          # Clobber, so re-running after a change to the patch replaces what the tag serves.
+          gh release upload $tag go-librespot-win-x64.zip --clobber

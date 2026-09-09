@@ -28,18 +28,31 @@ LEAD_SECONDS = 0.25
 #: How long a gap waits for a late packet before silence stands in for it.
 GAP_TOLERANCE_SECONDS = 0.1
 
+#: How often a run of undecodable packets is allowed to say so.
+UNDECODABLE_WARN_INTERVAL = 5.0
+
 NTP_EPOCH_OFFSET = 2208988800
 
 
 class _Datagram(asyncio.DatagramProtocol):
-    def __init__(self, on_packet) -> None:
+    """Bound to 0.0.0.0 on a fixed, well-known port, so anything on the LAN can reach it. Only the
+    sender that negotiated this session may be heard: a second device still streaming into the same
+    port gets its packets decrypted with this session's key, which is indistinguishable from noise
+    and decodes to nothing but errors."""
+
+    def __init__(self, on_packet, peer: str, on_stranger) -> None:
         self._on_packet = on_packet
+        self._peer = peer
+        self._on_stranger = on_stranger
         self.transport: asyncio.DatagramTransport | None = None
 
     def connection_made(self, transport) -> None:
         self.transport = transport
 
     def datagram_received(self, data: bytes, address) -> None:
+        if self._peer and address[0] != self._peer:
+            self._on_stranger(address)
+            return
         self._on_packet(data, address)
 
     def error_received(self, exc) -> None:
@@ -50,13 +63,18 @@ class RtpSession:
     """Owns the UDP sockets for one RECORD. Decrypts, decodes and releases audio to the sink."""
 
     def __init__(self, key: bytes, iv: bytes, decoder, frames_per_packet: int,
-                 sample_rate: int, sink, hub) -> None:
+                 sample_rate: int, sink, hub, peer: str = "") -> None:
         self._cipher = Cipher(algorithms.AES(key), modes.CBC(iv)) if key else None
         self._decoder = decoder
         self._frames = frames_per_packet
         self._rate = sample_rate
         self._sink = sink
         self._hub = hub
+        self._peer = peer
+
+        self._undecodable = 0
+        self._warned_at = 0.0
+        self._strangers: set[str] = set()
 
         self._buffer: dict[int, bytes] = {}
         self._next_ts: int | None = None
@@ -78,7 +96,8 @@ class RtpSession:
             (TIMING_PORT, self._on_timing),
         ):
             transport, _ = await loop.create_datagram_endpoint(
-                lambda handler=handler: _Datagram(handler), local_addr=("0.0.0.0", port))
+                lambda handler=handler: _Datagram(handler, self._peer, self._note_stranger),
+                local_addr=("0.0.0.0", port))
             self._transports.append(transport)
             ports.append(transport.get_extra_info("socket").getsockname()[1])
 
@@ -157,7 +176,7 @@ class RtpSession:
         try:
             pcm = self._decoder.decode(payload)
         except Exception as exc:
-            self._hub.warn(f"airplay: could not decode a packet ({exc})")
+            self._report_undecodable(exc)
             return
 
         if not pcm:
@@ -168,6 +187,29 @@ class RtpSession:
 
         if self._next_ts is None or marker:
             self._start_cursor(timestamp)
+
+    def _note_stranger(self, address) -> None:
+        """Said once per address: dropping these is right when it really is a second device, but if
+        a sender ever puts its audio on a different address than its RTSP connection this is the
+        only thing standing between the user and silence with no explanation."""
+        if address[0] in self._strangers:
+            return
+
+        self._strangers.add(address[0])
+        self._hub.warn(f"airplay: ignoring audio from {address[0]} - "
+                       f"this session belongs to {self._peer}")
+
+    def _report_undecodable(self, exc: Exception) -> None:
+        """Whatever makes one packet undecodable makes all of them undecodable, and a sender fills
+        125 a second - one log line each, every one of them printed and fanned out to every panel
+        socket. Count them and say so periodically instead."""
+        self._undecodable += 1
+        now = time.monotonic()
+        if now - self._warned_at < UNDECODABLE_WARN_INTERVAL:
+            return
+
+        dropped, self._undecodable, self._warned_at = self._undecodable, 0, now
+        self._hub.warn(f"airplay: dropped {dropped} packet(s) that would not decode ({exc})")
 
     def _start_cursor(self, timestamp: int) -> None:
         self._next_ts = timestamp

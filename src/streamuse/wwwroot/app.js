@@ -172,6 +172,7 @@ function render() {
   renderHealth(view);
   renderLog();
   renderDeps();
+  renderRequests();
   applyTheme();
 }
 
@@ -338,6 +339,56 @@ function renderDeps() {
   }));
 }
 
+/* Only the sources whose enqueue parks a request for the host produce these, so an empty list is
+   the normal state and the card stays out of the way. */
+function renderRequests() {
+  const pending = state.requests || [];
+  document.getElementById('requests-card').hidden = pending.length === 0;
+
+  document.getElementById('requests-list').replaceChildren(...pending.map(track => {
+    const row = document.createElement('div');
+    row.className = 'request';
+
+    if (track.artUrl) {
+      const art = document.createElement('img');
+      art.src = track.artUrl;
+      art.alt = '';
+      row.append(art);
+    }
+
+    const text = document.createElement('div');
+    text.className = 'request-text';
+
+    const title = document.createElement('span');
+    title.className = 'request-title';
+    title.textContent = track.title;
+
+    const by = document.createElement('span');
+    by.className = 'request-by';
+    by.textContent = track.artist + (track.album ? ' · ' + track.album : '');
+
+    text.append(title, by);
+
+    const when = document.createElement('span');
+    when.className = 'request-time';
+    when.textContent = track.time;
+
+    const open = document.createElement('button');
+    open.className = 'btn btn-secondary';
+    open.textContent = 'Open';
+    open.onclick = () => post('/api/requests/open', { id: track.id }).catch(error => alert(error.message));
+
+    const drop = document.createElement('button');
+    drop.className = 'btn btn-ghost';
+    drop.textContent = '✕';
+    drop.title = 'Dismiss';
+    drop.onclick = () => post('/api/requests/drop', { id: track.id });
+
+    row.append(text, when, open, drop);
+    return row;
+  }));
+}
+
 function setText(binding, text) {
   for (const element of document.querySelectorAll('[data-bind="' + binding + '"]')) {
     element.textContent = text;
@@ -373,6 +424,7 @@ function fillSettings() {
   document.getElementById('set-token').value = settings.namedTunnelToken;
   document.getElementById('set-host').value = settings.namedTunnelHostname;
   document.getElementById('set-autotunnel').checked = settings.autoTunnel;
+  document.getElementById('set-requests').checked = settings.songRequests;
 
   const resolution = settings.width + 'x' + settings.height;
   for (const radio of document.querySelectorAll('input[name="res"]')) {
@@ -410,7 +462,8 @@ function readSettings() {
     tunnelMode: (document.querySelector('input[name="tmode"]:checked') || {}).value || 'Quick',
     namedTunnelToken: document.getElementById('set-token').value.trim(),
     namedTunnelHostname: document.getElementById('set-host').value.trim(),
-    autoTunnel: document.getElementById('set-autotunnel').checked
+    autoTunnel: document.getElementById('set-autotunnel').checked,
+    songRequests: document.getElementById('set-requests').checked
   };
 }
 

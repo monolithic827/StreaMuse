@@ -11,21 +11,24 @@ without it.
 
 ## Producing the binary
 
-The `librespot` job in `.github/workflows/build.yml` does this on every release build, and the
-result is shipped inside `StreaMuse.exe`. It is upstream's own Windows job - `release.yml` in
-`devgianlu/go-librespot`, MSYS2 `MINGW64` with
+`.github/workflows/go-librespot.yml` does this and publishes the result - the exe plus the DLLs it
+links against - as `go-librespot-win-x64.zip` under a `go-librespot-{LIBRESPOT_REF}` tag, which is
+where `deps.GO_LIBRESPOT_URL` downloads it from. Nothing triggers that workflow on an ordinary push,
+so run it by hand after changing the patch or `LIBRESPOT_REF`; `deps.GO_LIBRESPOT_REF` has to name
+the same upstream release, since it is what builds the URL.
+
+It is upstream's own Windows job - `release.yml` in `devgianlu/go-librespot`, MSYS2 `MINGW64` with
 `mingw-w64-x86_64-{gcc,pkg-config,libogg,libvorbis,flac,mpg123}` - with two steps inserted:
 `driver-pipe-windows.go` copied to `output/`, and `output/driver-pipe-stub.go` deleted, because
-both define `newPipeOutput`. Keep it in step with theirs; `LIBRESPOT_REF` pins the tag it patches.
+both define `newPipeOutput`. Keep it in step with theirs.
 
-`go-librespot.exe` alone is not enough - see CLAUDE.md's Spotify section for the four DLLs it also
-needs and why.
+`go-librespot.exe` alone is not enough - see CLAUDE.md's Spotify section for the DLLs it also needs
+and why, which is why the published asset is an archive of the whole set rather than the exe.
 
-To get them for a source checkout, take the exe and those four DLLs out of a release exe (or its
-`go-librespot-libs.zip` release asset) or run those steps by hand, and put them all in
-`%LOCALAPPDATA%\StreaMuse\bin`. `DependencyManager.go_librespot` resolves the exe live, so a running
-app picks it up with no restart; `deps.ensure_all` downloads the four DLLs on its own if the exe is
-there but they are not.
+Nothing has to be installed by hand: the app downloads that archive into
+`%LOCALAPPDATA%\StreaMuse\bin` when the exe is not already there. To test a local build instead, put
+it in that folder and it wins - `DependencyManager.go_librespot` resolves live, so a running app
+picks it up with no restart and no download.
 
-Open the change upstream. Once a go-librespot release carries it, drop the `librespot` job for a
-download of their asset and delete this directory.
+Open the change upstream. Once a go-librespot release carries it, point `GO_LIBRESPOT_URL` at their
+asset, drop this workflow and delete this directory.

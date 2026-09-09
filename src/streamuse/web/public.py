@@ -1,14 +1,19 @@
 """The public port: the HLS playlist and segments, the listener page and its now-playing feed.
 
-This is a security boundary. Everything here is GET or HEAD, lives under /live/{streamKey}/, and is
-one of a short allowlist; everything else 404s. It must never serialize the state snapshot - that
-carries the Cloudflare token, dependency paths that leak the Windows username, and the log - so the
-public now-playing record is declared here and built field by field, and a field added to the
-panel's state cannot become public by being adjacent to one.
+This is a security boundary. Everything here lives under /live/{streamKey}/ and is one of a short
+allowlist; everything else 404s. It must never serialize the state snapshot - that carries the
+Cloudflare token, dependency paths that leak the Windows username, and the log - so the public
+now-playing record is declared here and built field by field, and a field added to the panel's
+state cannot become public by being adjacent to one.
+
+Song requests are the one write, and the only POST: `request` alone answers it, and both it and
+`search` need the host to have turned songRequests on and the encoder to be running, or they 404
+like everything else that is not on the list.
 """
 
 import hashlib
 import re
+import time
 
 from aiohttp import web
 
@@ -33,7 +38,14 @@ IMMUTABLE = "public, max-age=31536000, immutable"
 OFF_AIR = {
     "title": "", "artist": "", "album": "", "playing": False,
     "positionSeconds": 0, "durationSeconds": 0, "artworkVersion": "0", "live": False,
+    "requests": "",
 }
+
+#: One spammer must not be what gets the host's account throttled by Spotify or Apple.
+SEARCH_COOLDOWN = 3.0
+QUEUE_COOLDOWN = 60.0
+
+MAX_QUERY = 120
 
 _DRIVE_RELATIVE = re.compile(r"^[A-Za-z]:")
 _asset_version: str | None = None
@@ -46,15 +58,41 @@ def is_safe_name(name: str) -> bool:
         "/" in name or "\\" in name or ".." in name or _DRIVE_RELATIVE.match(name))
 
 
-def build_app(hub, artwork, settings) -> web.Application:
+class Cooldown:
+    """One listener at a time, per address. This port is bound to loopback, so every connection
+    arrives from cloudflared and request.remote is always 127.0.0.1; CF-Connecting-IP is set by
+    Cloudflare itself and overwrites whatever the client sent, so it is the one usable identity."""
+
+    def __init__(self, seconds: float) -> None:
+        self._seconds = seconds
+        self._seen: dict[str, float] = {}
+
+    def take(self, request: web.Request) -> bool:
+        who = request.headers.get("CF-Connecting-IP") or request.remote or ""
+        now = time.monotonic()
+
+        # Pruned on every call, so the table cannot grow past the addresses inside one window.
+        self._seen = {k: v for k, v in self._seen.items() if now - v < self._seconds}
+
+        if who in self._seen:
+            return False
+
+        self._seen[who] = now
+        return True
+
+
+def build_app(hub, artwork, settings, sources) -> web.Application:
     app = web.Application()
-    app.router.add_route("*", "/{tail:.*}", _make_handler(hub, artwork, settings))
+    app.router.add_route("*", "/{tail:.*}", _make_handler(hub, artwork, settings, sources))
     return app
 
 
-def _make_handler(hub, artwork, settings):
+def _make_handler(hub, artwork, settings, sources):
+    searches = Cooldown(SEARCH_COOLDOWN)
+    queues = Cooldown(QUEUE_COOLDOWN)
+
     async def handle(request: web.Request) -> web.StreamResponse:
-        if request.method not in ("GET", "HEAD"):
+        if request.method not in ("GET", "HEAD", "POST"):
             return _not_found()
 
         prefix = f"/live/{settings.streamKey}/"
@@ -70,17 +108,32 @@ def _make_handler(hub, artwork, settings):
 
         name = path[len(prefix):]
 
+        if request.method == "POST":
+            if name != "request" or not _requests_open(hub, settings):
+                return _not_found()
+            return await _serve_request(request, hub, sources, queues)
+
         if name == "":
             return _serve_asset(request, "listen.html")
         if name == "now":
-            return _serve_now(request, hub)
+            return _serve_now(request, hub, settings, sources)
         if name == "art":
             return _serve_art(request, hub, artwork)
+        if name == "search":
+            if not _requests_open(hub, settings):
+                return _not_found()
+            return await _serve_search(request, sources, searches)
         if name.lower().endswith((".m3u8", ".ts")):
             return _serve_hls(request, name)
         return _serve_asset(request, name)
 
     return handle
+
+
+def _requests_open(hub, settings) -> bool:
+    # Off air the whole public surface goes quiet, and requests are no exception: with no stream
+    # there is no audience to be requesting for.
+    return bool(settings.songRequests) and hub.encoder.status == RUNNING
 
 
 def _send(request: web.Request, body: bytes, content_type: str, cache: str,
@@ -102,6 +155,11 @@ def _send(request: web.Request, body: bytes, content_type: str, cache: str,
 
 def _not_found() -> web.Response:
     return web.Response(status=404, text="Not found")
+
+
+def _json(payload: dict, status: int = 200) -> web.Response:
+    return web.Response(status=status, text=dumps(payload), content_type="application/json",
+                        charset="utf-8", headers={"Cache-Control": "no-store"})
 
 
 def _serve_hls(request: web.Request, name: str) -> web.StreamResponse:
@@ -159,7 +217,7 @@ def _version() -> str:
     return _asset_version
 
 
-def _serve_now(request: web.Request, hub) -> web.Response:
+def _serve_now(request: web.Request, hub, settings, sources) -> web.Response:
     now = hub.now_playing
 
     if hub.encoder.status == RUNNING:
@@ -174,11 +232,57 @@ def _serve_now(request: web.Request, hub) -> web.Response:
             # not be the version the host sent.
             "artworkVersion": str(now.artworkVersion),
             "live": True,
+            # "queue", "play" or "" - what the button will do, so the page can say which. The page
+            # supplies the wording; this is only ever one of the three.
+            "requests": sources.request_action if settings.songRequests else "",
         }
     else:
         payload = OFF_AIR
 
     return _send(request, dumps(payload).encode(), "application/json; charset=utf-8", "no-store")
+
+
+async def _serve_search(request: web.Request, sources, searches: Cooldown) -> web.Response:
+    query = (request.query.get("q") or "").strip()
+    if not query or len(query) > MAX_QUERY:
+        return _json({"error": "Type something to search for."}, 400)
+
+    if not searches.take(request):
+        return _json({"error": "One search at a time - try again in a moment."}, 429)
+
+    found = await sources.search(query)
+    if found is None or not found.id:
+        return _json({"found": False})
+
+    return _json({
+        "found": True,
+        "id": found.id,
+        "title": found.title,
+        "artist": found.artist,
+        "album": found.album,
+        "artUrl": found.artUrl,
+    })
+
+
+async def _serve_request(request: web.Request, hub, sources, queues: Cooldown) -> web.Response:
+    try:
+        body = await request.json()
+        track_id = str(body["id"])
+        # Straight from the listener and headed for the log, so anything that could forge a second
+        # line - or any other control character - comes out first.
+        title = "".join(c for c in str(body.get("title") or "") if c.isprintable())[:80]
+    except (ValueError, KeyError, TypeError):
+        return _json({"error": "Bad request."}, 400)
+
+    if not queues.take(request):
+        return _json({"error": "You have already requested a song - give it a minute."}, 429)
+
+    if not await sources.enqueue(track_id):
+        return _json({"error": "The source would not take that one."}, 503)
+
+    # The host is handing the audience a lever on their own playback, so what it did goes in the log.
+    hub.info(f"request: {title or track_id}")
+    return _json({"queued": True})
 
 
 def _serve_art(request: web.Request, hub, artwork) -> web.StreamResponse:

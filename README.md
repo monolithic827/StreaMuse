@@ -21,8 +21,10 @@ both into 1-second mpegts HLS segments - the format VRChat's AVPro player handle
 ## Running it
 
 Download `StreaMuse.exe` from the [latest release](../../releases/latest) and run it. It carries
-ffmpeg, cloudflared and go-librespot inside it, so there is nothing to install, nothing to download
-on first launch and nothing that needs the internet until you publish a stream.
+ffmpeg and cloudflared inside it, so there is nothing to install. Spotify Connect needs one more
+piece - a patched go-librespot, which no one else distributes - and the app fetches that into
+`%LOCALAPPDATA%\StreaMuse\bin` by itself on first launch. Apple Music is offered as a speaker
+immediately, before any of that.
 
 Then:
 
@@ -82,13 +84,18 @@ from wall clock - and writes what it heard to a WAV.
 uv run pyinstaller streamuse.spec --noconfirm   # dist/StreaMuse.exe
 ```
 
-CI builds the same one-file exe on every push and attaches it to a release on a `v*` tag. It stages
-the three tools into `vendor/bin` first and fails the build if any is missing, so a release can
-never ship without them. go-librespot's own Windows build cannot write audio to a pipe, so CI builds
-it from upstream with the one-file patch in `vendor/go-librespot/`.
+CI builds the same one-file exe on every push and uploads it as a workflow artifact. Publishing is a
+separate, deliberate act: only a `v*` tag creates a release, so an ordinary commit to `main` cannot
+move what the download link above points at. Either way the build stages ffmpeg and cloudflared into
+`vendor/bin` first and fails if either is missing, so a release can never ship without them.
 
-Running from source instead (`uv run streamuse`) downloads ffmpeg and cloudflared into
-`%LOCALAPPDATA%\StreaMuse\bin` on first launch, ~200 MB, once - the AirPlay speaker is advertised
-before the download starts, so Apple Music can pick it straight away. go-librespot is not
-downloaded; build it per `vendor/go-librespot/README.md` or take the one out of a release exe.
-Without it Spotify shows as unavailable and Apple Music works normally.
+go-librespot is built by a separate workflow (`.github/workflows/go-librespot.yml`) and published
+under its own `go-librespot-*` tag rather than shipped in the exe, because its own Windows build
+cannot write audio to a pipe and has to be patched - see `vendor/go-librespot/`. The app downloads
+that asset when it needs it, so the app build neither waits on it nor can ship a stale copy of it.
+Nothing triggers that workflow automatically - run it by hand when the patch or the pinned ref
+changes, since a rerun replaces the asset every install downloads.
+
+Running from source (`uv run streamuse`) behaves identically: ffmpeg and cloudflared are downloaded
+into `%LOCALAPPDATA%\StreaMuse\bin` on first launch, ~200 MB, once. The AirPlay speaker is
+advertised before any download starts, so Apple Music can pick it straight away.

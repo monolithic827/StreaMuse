@@ -6,6 +6,7 @@ of the app never learns which one is running. Only the selected receiver runs at
 
 import asyncio
 import time
+from dataclasses import dataclass
 
 from ..state import NowPlaying, SourceOption, SourceState
 
@@ -62,10 +63,26 @@ class TrackState:
                           self.position, self.duration, artwork_version)
 
 
+@dataclass(frozen=True)
+class RequestTrack:
+    """One resolved search result. The id is what comes back to enqueue it, and each receiver
+    validates its own shape before acting on it."""
+
+    id: str
+    title: str
+    artist: str
+    album: str
+    artUrl: str
+
+
 class Receiver:
     """Implemented by the AirPlay and Spotify receivers."""
 
     source = ""
+
+    #: What enqueue does to the sender: "queue" plays it after the current track, "play" starts it
+    #: now. Empty when the receiver cannot take requests at all.
+    request_action = ""
 
     @property
     def available(self) -> bool:
@@ -102,6 +119,17 @@ class Receiver:
     async def load(self, query: str) -> bool:
         """Overridden only by a source that accepts an on-demand URL or search query rather than
         waiting for something else to connect."""
+        return False
+
+    async def search(self, query: str) -> RequestTrack | None:
+        return None
+
+    async def enqueue(self, track_id: str) -> bool:
+        return False
+
+    async def open_request(self, track_id: str) -> bool:
+        """Only reached for a receiver whose enqueue parks the request for the host instead of
+        acting on it."""
         return False
 
 
@@ -157,6 +185,23 @@ class SourceManager:
     async def load(self, query: str) -> bool:
         receiver = self._active
         return await receiver.load(query) if receiver is not None else False
+
+    @property
+    def request_action(self) -> str:
+        receiver = self._active
+        return receiver.request_action if receiver is not None else ""
+
+    async def search(self, query: str) -> RequestTrack | None:
+        receiver = self._active
+        return await receiver.search(query) if receiver is not None else None
+
+    async def enqueue(self, track_id: str) -> bool:
+        receiver = self._active
+        return await receiver.enqueue(track_id) if receiver is not None else False
+
+    async def open_request(self, track_id: str) -> bool:
+        receiver = self._active
+        return await receiver.open_request(track_id) if receiver is not None else False
 
     def start_publishing(self) -> None:
         self._publisher = asyncio.create_task(self._publish_loop())
