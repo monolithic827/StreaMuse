@@ -226,9 +226,9 @@ class YtDlpReceiver(Receiver):
         if cached.info.thumbnail_url:
             self._artwork.set(await _fetch(cached.info.thumbnail_url))
 
-        decoder = Decoder(self._hub)
+        decoder = Decoder(self._hub, asyncio.get_running_loop())
         decoder.on_finished = self._on_finished
-        await decoder.start(self._deps.ffmpeg, cached.data, self._deliver)
+        decoder.start(self._deps.ffmpeg, cached.data, self._deliver)
         self._decoder = decoder
 
     async def _toggle(self) -> bool:
@@ -243,7 +243,10 @@ class YtDlpReceiver(Receiver):
         decoder, self._decoder = self._decoder, None
         if decoder is not None:
             decoder.on_finished = None
-            await decoder.stop()
+            # Sync, like spotify/pipe.py's own stop() - a bounded join while ffmpeg's kill()
+            # unblocks the read thread, not something worth threading through to_thread for a
+            # deliberate stop rather than steady playback.
+            decoder.stop()
         self._track.clear()
         self._title = ""
 

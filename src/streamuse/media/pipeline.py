@@ -225,9 +225,14 @@ class StreamPipeline:
                     self._hub.warn(f"audio buffer overran - {shed}s shed to stay in sync")
 
                 encoder = session.encoder
+                # Off the loop: this globs and stats the HLS segment directory, and a stall in that
+                # filesystem call - the encoder is concurrently writing and renaming segments in the
+                # same directory - would otherwise block every other coroutine on this thread too,
+                # the yt-dlp decoder's own real-time pacing included.
+                bitrate = await asyncio.to_thread(hls.measure_bitrate_kbps)
                 self._hub.set_encoder(EncoderState(
                     RUNNING,
-                    hls.measure_bitrate_kbps(),
+                    bitrate,
                     self._settings.fps,
                     encoder.dropped_frames if encoder else 0,
                     self._clock.elapsed_seconds,

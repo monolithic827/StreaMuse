@@ -466,9 +466,9 @@ panel still receives the version as a number: nothing validates it there.
   directly would let it escape and read as the caller itself having been cancelled.
   `Decoder` reads the bytes over its own stdin (`-i pipe:0`) rather than a path, which is also why its
   `-reconnect` flags had to come out: ffmpeg refuses to even start with "Option not found" if they are
-  given for stdin. Feeding stdin is its own concurrent task (`_write_input`), started alongside the
-  reader/drain tasks rather than awaited before them - writing several MB into ffmpeg's stdin and only
-  then reading its stdout would deadlock the moment ffmpeg's own stdout pipe fills, since it would be
+  given for stdin. Feeding stdin runs on its own thread (`_write_input`), started alongside the read
+  and log threads rather than run before them - writing several MB into ffmpeg's stdin and only then
+  reading its stdout would deadlock the moment ffmpeg's own stdout pipe fills, since it would be
   blocked writing PCM nobody is draining yet while this side is blocked writing input it isn't ready
   to accept yet either. Caching in memory rather than to disk was a deliberate second pass over the
   first version, which did cache to a temp file: real-world evidence on the machine this was built on
@@ -480,6 +480,33 @@ panel still receives the version as a number: nothing validates it there.
   of working around it. Verified end to end against real YouTube both ways - the disk-cache version
   first, then the in-memory rewrite, including that the stdin/stdout concurrency does not deadlock on
   a real multi-MB track.
+- **`Decoder`'s read-and-pace loop runs on its own OS thread, not the shared asyncio loop** - the same
+  pattern `spotify/pipe.py`'s `PipeReader` already uses for the identical reason: real-time pacing that
+  must never be at the mercy of whatever else the loop happens to be doing. This replaced an earlier
+  version that ran the read/pace loop as asyncio tasks sharing the loop with everything else; that
+  version kept shedding audio ("audio buffer overran") at irregular intervals even after moving to the
+  in-memory cache, mid-track, with no correlation to track transitions - traced to
+  `hls.measure_bitrate_kbps()` (`media/hls.py`) doing synchronous `glob()`/`stat()` calls on the HLS
+  segment directory directly on the shared loop once a second from `_publish_telemetry`
+  (`media/pipeline.py`), which blocks every other coroutine on that thread for however long that
+  filesystem call takes - and the encoder is concurrently writing and renaming segments in that same
+  directory, which is also what an earlier, unrelated HLS-rename failure in this same session pointed
+  at. That call is now wrapped in `asyncio.to_thread` as the direct fix. Moving the decoder to its own
+  thread is a complementary hardening on top, not a replacement for that fix: reading and pacing
+  against ffmpeg's stdout now happens completely independently of the loop, so nothing sharing the
+  loop can starve `_reader`/`_drain` the way the old two-task, queue-backed version could be - but
+  `on_pcm`/`on_finished` still cross back onto the loop through `call_soon_threadsafe`, exactly like
+  `PipeReader` does, so a genuinely stalled loop can still let a backlog of already-correctly-paced
+  chunks arrive at `AudioPacer` in a burst once it unblocks. A dedicated thread needs no separate
+  read-ahead queue the way the shared-loop version did - the OS pipe between ffmpeg and this thread
+  backpressures on its own, the same as the named pipe go-librespot writes into - which is why
+  `QUEUE_SECONDS`/`PREBUFFER_SECONDS` and the reader/drain split are gone entirely rather than just
+  retuned again. **Neither of these was actually the cause of the shedding they were built to fix** -
+  a direct measurement (polling `/api/state` every 150ms while shedding was actively occurring)
+  showed the loop responding in 0-2ms throughout, ruling out a loop stall entirely. Left in as
+  independently-justified hardening (both match this codebase's own established patterns and are
+  simplifications, not just workarounds) rather than reverted, but the actual mechanism behind the
+  shedding is still open - see "Not yet verified".
 
 **Serialization and background tasks**
 - Never put a non-finite `float` into anything serialized. `state.dumps` passes `allow_nan=False`, so
@@ -633,3 +660,17 @@ endpoint) rather than the receiver driven directly, and whether moving the cache
 resolves the antivirus-shaped symptoms observed against the disk version - that diagnosis was never
 fully confirmed against Defender's own logs, only inferred from ffmpeg's own abnormal exit codes and
 slow process kills.
+
+**The "audio buffer overran" shedding itself is still unexplained** after both the in-memory rewrite
+and moving `Decoder` to its own thread - confirmed still reproducing live, mid-track, with no
+correlation to track transitions, after every fix above landed. What has been directly ruled out
+rather than just reasoned about: a loop stall (`/api/state` polled every 150ms during an actively
+shedding session came back in 0-2ms throughout, so nothing was blocking the shared loop when the
+shed happened); general CPU/memory contention (sampled live during shedding, both stayed low, and
+neither `python` nor `ffmpeg` nor antivirus appeared among the top CPU consumers); and the shared
+pipeline itself (Spotify, using the exact same `AudioPacer`/`Clock`/encoder on the same machine,
+plays cleanly with no shedding at all - this is specific to the yt-dlp path). A resample-drift
+theory (ffmpeg converting YouTube's 48kHz Opus down to the pipeline's fixed 44100Hz) was tested
+against a real track's precise source duration and came back clean - only the ordinary one-time
+Opus priming-sample skip/discard at the start and end, nothing accumulating. The actual mechanism
+remains open.
