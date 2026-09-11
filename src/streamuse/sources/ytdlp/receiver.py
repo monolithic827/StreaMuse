@@ -7,18 +7,18 @@ is the only entry point for both, and only starts playing immediately when the q
 public song request (search()/enqueue()) feeds the same queue, so a request lines up behind
 whatever the panel started instead of needing a queue of its own.
 
-Every track is downloaded to a local file (cache.py) before it plays, rather than decoded straight
-off the network - see cache.py for why. The item at the head of the queue is prefetched into cache
-while the current track is still playing, so by the time it is needed the transition is a plain file
-open rather than a fresh resolve-and-connect; only ever one item ahead is prefetched, since nothing
-here plays more than one track ahead anyway. A track's cache file is discarded the moment it stops
-being current, whether that is a natural end or a skip.
+Every track is downloaded into memory (cache.py) before it plays, rather than decoded straight off
+the network - see cache.py for why. The item at the head of the queue is prefetched while the current
+track is still playing, so by the time it is needed the transition is ffmpeg reading bytes already
+sitting in RAM rather than a fresh resolve-and-connect; only ever one item ahead is prefetched, since
+nothing here plays more than one track ahead anyway. A track's cached bytes are just a `_Cached`
+reference dropped the moment it stops being current, whether that is a natural end or a skip - there
+is nothing to explicitly clean up the way a file would need.
 """
 
 import asyncio
 import re
 from dataclasses import dataclass
-from pathlib import Path
 
 import aiohttp
 
@@ -50,7 +50,7 @@ def _is_allowed(query: str) -> bool:
 @dataclass(frozen=True)
 class _Cached:
     info: TrackInfo
-    path: Path
+    data: bytes
 
 
 class YtDlpReceiver(Receiver):
@@ -77,10 +77,6 @@ class YtDlpReceiver(Receiver):
         #: `self._queue[0]` and always consumed into the current track on the next advance, so its
         #: identity never needs tracking separately from the queue's own.
         self._next: asyncio.Task | None = None
-        #: The current track's cache file, discarded the moment it stops being current.
-        self._current_path: Path | None = None
-
-        cache.clear_all()
 
     @property
     def available(self) -> bool:
@@ -192,17 +188,15 @@ class YtDlpReceiver(Receiver):
         task.cancel()
         # gather(..., return_exceptions=True) rather than a bare try/except: CancelledError is not
         # an Exception subclass since 3.8, so awaiting the cancelled task directly would let it
-        # escape this coroutine and look like `stop()` itself had been cancelled.
-        (result,) = await asyncio.gather(task, return_exceptions=True)
-        if isinstance(result, _Cached):
-            cache.discard(result.path)
+        # escape this coroutine and look like `stop()` itself had been cancelled. Nothing further to
+        # do with the result either way - a `_Cached` here is just bytes with no file to clean up.
+        await asyncio.gather(task, return_exceptions=True)
 
     async def _resolve_and_cache(self, item: QueueItem) -> _Cached:
         self._hub.info(f"yt-dlp: resolving '{item.query}'")
         info = await extract_async(item.query, self._settings.cookiesFile)
-        path = cache.new_path()
-        await cache.download(self._deps.ffmpeg, info.stream_url, info.http_headers, path)
-        return _Cached(info, path)
+        data = await cache.download(self._deps.ffmpeg, info.stream_url, info.http_headers)
+        return _Cached(info, data)
 
     async def _play(self, item: QueueItem, task: asyncio.Task | None) -> None:
         # Shows what a search result already told us immediately, in case resolving and caching is
@@ -232,10 +226,9 @@ class YtDlpReceiver(Receiver):
         if cached.info.thumbnail_url:
             self._artwork.set(await _fetch(cached.info.thumbnail_url))
 
-        self._current_path = cached.path
         decoder = Decoder(self._hub)
         decoder.on_finished = self._on_finished
-        await decoder.start(self._deps.ffmpeg, str(cached.path), self._deliver)
+        await decoder.start(self._deps.ffmpeg, cached.data, self._deliver)
         self._decoder = decoder
 
     async def _toggle(self) -> bool:
@@ -253,7 +246,6 @@ class YtDlpReceiver(Receiver):
             await decoder.stop()
         self._track.clear()
         self._title = ""
-        self._discard_current()
 
     def _on_finished(self) -> None:
         """The decoder calls this itself once ffmpeg's stdout closes - never on a deliberate stop(),
@@ -261,13 +253,7 @@ class YtDlpReceiver(Receiver):
         pump task does, so scheduling the next track is safe to do straight from here."""
         self._decoder = None
         self._track.set_playing(False)
-        self._discard_current()
         asyncio.create_task(self._advance())
-
-    def _discard_current(self) -> None:
-        path, self._current_path = self._current_path, None
-        if path is not None:
-            cache.discard(path)
 
     def _deliver(self, pcm: bytes) -> None:
         if self._sink is not None:

@@ -10,7 +10,6 @@ BIN_DIR = DATA_DIR / "bin"
 HLS_DIR = DATA_DIR / "hls"
 WEBVIEW_DIR = DATA_DIR / "webview"
 LIBRESPOT_DIR = DATA_DIR / "librespot"
-YTDLP_CACHE_DIR = DATA_DIR / "ytdlp-cache"
 
 SETTINGS_PATH = CONFIG_DIR / "settings.json"
 
@@ -28,5 +27,5 @@ def bundled_bin() -> Path | None:
 
 
 def ensure() -> None:
-    for directory in (CONFIG_DIR, DATA_DIR, BIN_DIR, HLS_DIR, YTDLP_CACHE_DIR):
+    for directory in (CONFIG_DIR, DATA_DIR, BIN_DIR, HLS_DIR):
         directory.mkdir(parents=True, exist_ok=True)

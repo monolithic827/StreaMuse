@@ -1,17 +1,23 @@
 """Decodes one already-downloaded track to raw PCM by running ffmpeg once per track.
 
-The input is always a local file that cache.py finished writing before this ever starts - nothing
-here talks to the network. ffmpeg still reads a local file far faster than playback, though, so an
-unpaced drain of its stdout would hand the pacer a whole track in a few seconds - the same failure
-the Spotify pipe reader exists to avoid (see CLAUDE.md). Draining is paced to real time the same way,
-but reading is not: a `_reader` task fills a bounded queue as fast as ffmpeg produces data, and
-`_drain` paces its way through that queue on its own clock. Disk reads don't stall the way a network
-fetch used to before caching existed, so the queue rarely does more than sit comfortably full, but
-keeping the same margin costs nothing and leaves this decoder able to read from anything ffmpeg's
-`-i` accepts, not just a finished local file.
+The input is always the bytes cache.py already finished downloading into memory before this ever
+starts - nothing here talks to the network, and nothing here touches disk either, so there is no
+file for antivirus real-time scanning to intercept mid-open. ffmpeg reads it over its stdin pipe
+(`-i pipe:0`) instead of a path; `_write_input` feeds those bytes in as its own concurrent task
+rather than before starting the reader, because writing several MB to stdin and only then reading
+stdout would deadlock the moment ffmpeg's own stdout pipe fills - it would be blocked writing PCM
+nobody is draining yet, while this side is blocked writing input it isn't ready to accept.
+
+Feeding ffmpeg from memory is still far faster than playback, so an unpaced drain of its stdout would
+hand the pacer a whole track in a few seconds - the same failure the Spotify pipe reader exists to
+avoid (see CLAUDE.md). Draining is paced to real time the same way, but reading is not: a `_reader`
+task fills a bounded queue as fast as ffmpeg produces data, and `_drain` paces its way through that
+queue on its own clock. Feeding from memory doesn't stall the way a network fetch used to before
+caching existed, so the queue rarely does more than sit comfortably full, but keeping the same margin
+costs nothing and leaves this decoder able to read from anything ffmpeg's `-i` accepts.
 
 `_drain` also primes a small cushion before starting its deadline clock (see `PREBUFFER_SECONDS`),
-so a slow-to-open file doesn't read as "already behind" the moment the clock starts and trip the
+so a slow-to-start decode doesn't read as "already behind" the moment the clock starts and trip the
 catch-up path against nothing.
 """
 
@@ -29,8 +35,8 @@ FRAME_BYTES = 4  # s16le stereo
 READ_SIZE = 1 << 16
 
 #: How much read-ahead the queue holds, in seconds of audio - the cushion a stall in reading the
-#: input would drain before it reaches the sink as silence. A local file's `_reader` can fill this
-#: almost instantly (nothing paces it the way a network fetch used to), so this stays just large
+#: input would drain before it reaches the sink as silence. Feeding ffmpeg from memory lets `_reader`
+#: fill this almost instantly (nothing paces it the way a network fetch used to), so this stays just large
 #: enough to clear `PREBUFFER_SECONDS` with headroom rather than the much bigger margin a network
 #: stall used to need - a bigger queue does not reach further, it only banks more backlog that a
 #: stall anywhere else in the process (observed: antivirus interfering with ffmpeg's own process
@@ -54,12 +60,12 @@ LEAD_SECONDS = 0.2
 MAX_CATCH_UP_SECONDS = 0.5
 
 
-def _build_arguments(file_path: str) -> list[str]:
+def _build_arguments() -> list[str]:
     # -reconnect and friends are a network-protocol option; ffmpeg refuses to start at all with
-    # "Option not found" if they are given for a plain local file, which is all this ever opens now.
+    # "Option not found" if they are given for stdin, which is all this ever reads now.
     return [
         "-hide_banner", "-nostdin", "-loglevel", "level+warning",
-        "-i", file_path,
+        "-i", "pipe:0",
         "-vn", "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", "2", "pipe:1",
     ]
 
@@ -70,6 +76,7 @@ class Decoder:
     def __init__(self, hub) -> None:
         self._hub = hub
         self._process: asyncio.subprocess.Process | None = None
+        self._writer_task: asyncio.Task | None = None
         self._reader_task: asyncio.Task | None = None
         self._drain_task: asyncio.Task | None = None
         self._log_task: asyncio.Task | None = None
@@ -79,18 +86,32 @@ class Decoder:
         #: Called once the track ends or the decode fails - never on a deliberate stop().
         self.on_finished = None
 
-    async def start(self, ffmpeg_path: str, file_path: str, on_pcm) -> None:
+    async def start(self, ffmpeg_path: str, data: bytes, on_pcm) -> None:
         self._process = await asyncio.create_subprocess_exec(
-            ffmpeg_path, *_build_arguments(file_path),
-            stdin=subprocess.DEVNULL,
+            ffmpeg_path, *_build_arguments(),
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             creationflags=CREATE_NO_WINDOW,
         )
         jobs.adopt(self._process)
+        self._writer_task = asyncio.create_task(self._write_input(data))
         self._reader_task = asyncio.create_task(self._reader())
         self._drain_task = asyncio.create_task(self._drain(on_pcm))
         self._log_task = asyncio.create_task(self._read_log(self._process.stderr))
+
+    async def _write_input(self, data: bytes) -> None:
+        stdin = self._process.stdin
+        try:
+            stdin.write(data)
+            await stdin.drain()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            # ffmpeg exiting early (a bad track) closes its end first - not this side's problem to
+            # report, _read_log already carries ffmpeg's own reason.
+            pass
+        finally:
+            with contextlib.suppress(Exception):
+                stdin.close()
 
     def pause(self) -> None:
         self._resume.clear()
@@ -101,8 +122,9 @@ class Decoder:
     async def stop(self) -> None:
         process, self._process = self._process, None
         self.on_finished = None
-        tasks = [t for t in (self._reader_task, self._drain_task, self._log_task) if t is not None]
-        self._reader_task = self._drain_task = self._log_task = None
+        tasks = [t for t in (self._writer_task, self._reader_task, self._drain_task, self._log_task)
+                 if t is not None]
+        self._writer_task = self._reader_task = self._drain_task = self._log_task = None
         for task in tasks:
             task.cancel()
         # Cancelling only requests it - awaited here so none is left dangling half-cancelled once

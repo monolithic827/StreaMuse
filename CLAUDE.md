@@ -451,22 +451,35 @@ panel still receives the version as a number: nothing validates it there.
   bare text, which only ever becomes a YouTube search and is always safe. `enqueue()` re-checks the
   same allowlist independently of `search()`, since the id a listener POSTs back is never assumed to
   be one `search()` actually returned.
-- **Every track is downloaded to a local file (`cache.py`) before it plays, rather than decoded off
-  the network live.** A CDN reset during download just costs download time - ffmpeg's own
-  `-reconnect` keeps retrying against a target with no realtime deadline to miss - where the same
-  reset landing mid-playback against the paced decoder used to shed audio outright (the "audio buffer
-  overran" case). The queue's head is prefetched into cache while the current track is still playing
-  (`_ensure_next_locked`), so a normal advance is a plain file open rather than a fresh
+- **Every track is downloaded into memory (`cache.py`) before it plays, rather than decoded off the
+  network live.** A CDN reset during download just costs download time - ffmpeg's own `-reconnect`
+  keeps retrying against a target with no realtime deadline to miss - where the same reset landing
+  mid-playback against the paced decoder used to shed audio outright (the "audio buffer overran"
+  case). The queue's head is prefetched while the current track is still playing (`_ensure_next_locked`),
+  so a normal advance is ffmpeg reading bytes already sitting in RAM rather than a fresh
   resolve-and-connect; only ever one item is prefetched, since nothing here plays more than one track
-  ahead anyway. A track's cache file is discarded the moment it stops being current - natural end,
-  skip, or `stop()` - never kept around for a replay. Discarding a still-in-flight prefetch has to
-  await it through `asyncio.gather(task, return_exceptions=True)` rather than a bare
-  `try/except Exception` - `CancelledError` has not been an `Exception` subclass since 3.8, so
-  awaiting a cancelled task directly would let it escape and read as the caller itself having been
-  cancelled. `Decoder` only ever opens a local path now, never a URL, which is why its own
-  `-reconnect` flags had to come out: ffmpeg refuses to even start with "Option not found" if they
-  are given for a plain file - caught by actually running the cached-playback path end to end, not
-  just by reasoning about it.
+  ahead anyway. A track's cached bytes are a plain `_Cached` reference, dropped the moment it stops
+  being current - natural end, skip, or `stop()` - the same as any other object; there is no file to
+  clean up. Discarding a still-in-flight prefetch has to await it through
+  `asyncio.gather(task, return_exceptions=True)` rather than a bare `try/except Exception` -
+  `CancelledError` has not been an `Exception` subclass since 3.8, so awaiting a cancelled task
+  directly would let it escape and read as the caller itself having been cancelled.
+  `Decoder` reads the bytes over its own stdin (`-i pipe:0`) rather than a path, which is also why its
+  `-reconnect` flags had to come out: ffmpeg refuses to even start with "Option not found" if they are
+  given for stdin. Feeding stdin is its own concurrent task (`_write_input`), started alongside the
+  reader/drain tasks rather than awaited before them - writing several MB into ffmpeg's stdin and only
+  then reading its stdout would deadlock the moment ffmpeg's own stdout pipe fills, since it would be
+  blocked writing PCM nobody is draining yet while this side is blocked writing input it isn't ready
+  to accept yet either. Caching in memory rather than to disk was a deliberate second pass over the
+  first version, which did cache to a temp file: real-world evidence on the machine this was built on
+  (an HLS playlist rename failing with "Operation not permitted", ffmpeg cache-download processes
+  exiting with Windows' uninitialized-memory-pattern codes like `0xCCCCCCC8`, and a plain `kill()`
+  taking the full 3s timeout to actually end a process) pointed at antivirus real-time scanning
+  interfering with ffmpeg's file access - and rather than asking every install to carve out an
+  exclusion, keeping the downloaded audio out of the filesystem entirely sidesteps the problem instead
+  of working around it. Verified end to end against real YouTube both ways - the disk-cache version
+  first, then the in-memory rewrite, including that the stdin/stdout concurrency does not deadlock on
+  a real multi-MB track.
 
 **Serialization and background tasks**
 - Never put a non-finite `float` into anything serialized. `state.dumps` passes `allow_nan=False`, so
@@ -604,13 +617,19 @@ existing yt-dlp verification already covers SoundCloud for direct panel playback
 
 **yt-dlp's cache-before-play path** is verified end to end against real YouTube, driving `YtDlpReceiver`
 directly rather than through the panel: the first track of a session resolves, downloads and starts
-decoding with no prewarm; a second queued track is prefetched into cache while the first is still
-playing (confirmed present on disk before being needed); `control("next")` picks up that prefetch and
-switches in ~0.2s rather than repeating the ~3-4s resolve, with real PCM measured flowing to the sink
-afterward; the track being left discards its cache file immediately on the switch, and the newly
-current one's file is the only one left on disk; `stop()` leaves the cache directory empty. This run
-is also what caught the `-reconnect`/"Option not found" bug against a local file and the
-`CancelledError`-vs-`Exception` bug in discarding an in-flight prefetch, both fixed as a result. Not
-yet exercised: this path through the real app (panel and public request endpoint) rather than the
-receiver driven directly, and disk behavior under a real crash mid-download (the crash-cleanup sweep
-in `cache.clear_all()` is reasoned about, not reproduced).
+decoding with no prewarm; a second queued track is prefetched while the first is still playing
+(confirmed present in memory before being needed); `control("next")` picks up that prefetch and
+switches without repeating the resolve, with real PCM measured flowing to the sink afterward; `stop()`
+leaves nothing behind (checked via `_decoder`/`_next` both `None`, since there is no cache directory
+left to inspect anymore). This run is also what caught the `-reconnect`/"Option not found" bug and the
+`CancelledError`-vs-`Exception` bug in discarding an in-flight prefetch. The disk-cache version that
+preceded the in-memory rewrite was verified the same way first (file present while prefetching,
+discarded on transition, cache directory empty after `stop()`) before the rewrite replaced it -
+real-world evidence pointed at antivirus interference with the cache files specifically, which is
+what motivated moving the audio into memory rather than continuing to debug file access. The
+stdin-write/stdout-read concurrency in the rewritten `Decoder` was verified against a real multi-MB
+track with no deadlock. Not yet exercised: this path through the real app (panel and public request
+endpoint) rather than the receiver driven directly, and whether moving the cache into memory actually
+resolves the antivirus-shaped symptoms observed against the disk version - that diagnosis was never
+fully confirmed against Defender's own logs, only inferred from ffmpeg's own abnormal exit codes and
+slow process kills.
