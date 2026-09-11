@@ -451,6 +451,22 @@ panel still receives the version as a number: nothing validates it there.
   bare text, which only ever becomes a YouTube search and is always safe. `enqueue()` re-checks the
   same allowlist independently of `search()`, since the id a listener POSTs back is never assumed to
   be one `search()` actually returned.
+- **Every track is downloaded to a local file (`cache.py`) before it plays, rather than decoded off
+  the network live.** A CDN reset during download just costs download time - ffmpeg's own
+  `-reconnect` keeps retrying against a target with no realtime deadline to miss - where the same
+  reset landing mid-playback against the paced decoder used to shed audio outright (the "audio buffer
+  overran" case). The queue's head is prefetched into cache while the current track is still playing
+  (`_ensure_next_locked`), so a normal advance is a plain file open rather than a fresh
+  resolve-and-connect; only ever one item is prefetched, since nothing here plays more than one track
+  ahead anyway. A track's cache file is discarded the moment it stops being current - natural end,
+  skip, or `stop()` - never kept around for a replay. Discarding a still-in-flight prefetch has to
+  await it through `asyncio.gather(task, return_exceptions=True)` rather than a bare
+  `try/except Exception` - `CancelledError` has not been an `Exception` subclass since 3.8, so
+  awaiting a cancelled task directly would let it escape and read as the caller itself having been
+  cancelled. `Decoder` only ever opens a local path now, never a URL, which is why its own
+  `-reconnect` flags had to come out: ffmpeg refuses to even start with "Option not found" if they
+  are given for a plain file - caught by actually running the cached-playback path end to end, not
+  just by reasoning about it.
 
 **Serialization and background tasks**
 - Never put a non-finite `float` into anything serialized. `state.dumps` passes `allow_nan=False`, so
@@ -585,3 +601,16 @@ attempt by yt-dlp's own generic extractor, not merely a syntax rejection) is ref
 actual public HTTP endpoint end to end (verified so far at the receiver level, not through
 `web/public.py`'s cooldowns and JSON handling), and SoundCloud specifically for this path (the
 existing yt-dlp verification already covers SoundCloud for direct panel playback).
+
+**yt-dlp's cache-before-play path** is verified end to end against real YouTube, driving `YtDlpReceiver`
+directly rather than through the panel: the first track of a session resolves, downloads and starts
+decoding with no prewarm; a second queued track is prefetched into cache while the first is still
+playing (confirmed present on disk before being needed); `control("next")` picks up that prefetch and
+switches in ~0.2s rather than repeating the ~3-4s resolve, with real PCM measured flowing to the sink
+afterward; the track being left discards its cache file immediately on the switch, and the newly
+current one's file is the only one left on disk; `stop()` leaves the cache directory empty. This run
+is also what caught the `-reconnect`/"Option not found" bug against a local file and the
+`CancelledError`-vs-`Exception` bug in discarding an in-flight prefetch, both fixed as a result. Not
+yet exercised: this path through the real app (panel and public request endpoint) rather than the
+receiver driven directly, and disk behavior under a real crash mid-download (the crash-cleanup sweep
+in `cache.clear_all()` is reasoned about, not reproduced).
