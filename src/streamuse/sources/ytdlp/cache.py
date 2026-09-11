@@ -1,16 +1,14 @@
-"""Downloads a resolved track into memory before it plays.
+"""Resolves and decodes a track into memory before it plays - network fetch, resample and PCM decode
+all in one ffmpeg pass, off the critical path during prefetch.
 
-Decoding then reads those bytes over a pipe instead of an active network connection, so a CDN reset
-during this step only costs download time - ffmpeg's own `-reconnect` keeps retrying against a
-target with no realtime deadline to miss, unlike the same reset landing mid-playback against the
-paced decoder (see decoder.py and CLAUDE.md's "audio buffer overran" note). Never touching disk for
-the downloaded audio also means nothing here is a file antivirus real-time scanning can intercept
-mid-open - a track's cache is just a `bytes` object, dropped like any other reference once it stops
-being needed rather than explicitly cleaned up.
-
-Matroska holds whatever codec the source used (opus, aac, ...) via `-c:a copy`, so the output never
-has to branch on that - always Matroska regardless of the source. `-f matroska` is required because
-there is no destination filename to infer it from now that the output is a pipe.
+A CDN reset during this step only costs download time - ffmpeg's own `-reconnect` keeps retrying
+against a target with no realtime deadline to miss, unlike the same reset landing mid-playback
+against a paced decoder (see decoder.py and CLAUDE.md's "audio buffer overran" note). Doing the full
+decode here rather than deferring it to playback time means nothing during playback ever depends on
+a live ffmpeg process again - decoder.py's job shrinks to pacing bytes already sitting in memory.
+Never touching disk for the downloaded audio also means nothing here is a file antivirus real-time
+scanning can intercept mid-open - a track's cache is just a `bytes` object, dropped like any other
+reference once it stops being needed rather than explicitly cleaned up.
 """
 
 import asyncio
@@ -18,6 +16,7 @@ import contextlib
 import subprocess
 
 from ... import jobs
+from .. import SAMPLE_RATE
 
 CREATE_NO_WINDOW = 0x08000000
 
@@ -29,7 +28,7 @@ async def download(ffmpeg_path: str, stream_url: str, http_headers: dict[str, st
     ]
     if http_headers:
         arguments += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in http_headers.items())]
-    arguments += ["-i", stream_url, "-vn", "-c:a", "copy", "-f", "matroska", "pipe:1"]
+    arguments += ["-i", stream_url, "-vn", "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", "2", "pipe:1"]
 
     process = await asyncio.create_subprocess_exec(
         ffmpeg_path, *arguments,

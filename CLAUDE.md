@@ -451,62 +451,59 @@ panel still receives the version as a number: nothing validates it there.
   bare text, which only ever becomes a YouTube search and is always safe. `enqueue()` re-checks the
   same allowlist independently of `search()`, since the id a listener POSTs back is never assumed to
   be one `search()` actually returned.
-- **Every track is downloaded into memory (`cache.py`) before it plays, rather than decoded off the
-  network live.** A CDN reset during download just costs download time - ffmpeg's own `-reconnect`
-  keeps retrying against a target with no realtime deadline to miss - where the same reset landing
-  mid-playback against the paced decoder used to shed audio outright (the "audio buffer overran"
-  case). The queue's head is prefetched while the current track is still playing (`_ensure_next_locked`),
-  so a normal advance is ffmpeg reading bytes already sitting in RAM rather than a fresh
-  resolve-and-connect; only ever one item is prefetched, since nothing here plays more than one track
-  ahead anyway. A track's cached bytes are a plain `_Cached` reference, dropped the moment it stops
-  being current - natural end, skip, or `stop()` - the same as any other object; there is no file to
-  clean up. Discarding a still-in-flight prefetch has to await it through
-  `asyncio.gather(task, return_exceptions=True)` rather than a bare `try/except Exception` -
-  `CancelledError` has not been an `Exception` subclass since 3.8, so awaiting a cancelled task
-  directly would let it escape and read as the caller itself having been cancelled.
-  `Decoder` reads the bytes over its own stdin (`-i pipe:0`) rather than a path, which is also why its
-  `-reconnect` flags had to come out: ffmpeg refuses to even start with "Option not found" if they are
-  given for stdin. Feeding stdin runs on its own thread (`_write_input`), started alongside the read
-  and log threads rather than run before them - writing several MB into ffmpeg's stdin and only then
-  reading its stdout would deadlock the moment ffmpeg's own stdout pipe fills, since it would be
-  blocked writing PCM nobody is draining yet while this side is blocked writing input it isn't ready
-  to accept yet either. Caching in memory rather than to disk was a deliberate second pass over the
-  first version, which did cache to a temp file: real-world evidence on the machine this was built on
-  (an HLS playlist rename failing with "Operation not permitted", ffmpeg cache-download processes
-  exiting with Windows' uninitialized-memory-pattern codes like `0xCCCCCCC8`, and a plain `kill()`
-  taking the full 3s timeout to actually end a process) pointed at antivirus real-time scanning
-  interfering with ffmpeg's file access - and rather than asking every install to carve out an
-  exclusion, keeping the downloaded audio out of the filesystem entirely sidesteps the problem instead
-  of working around it. Verified end to end against real YouTube both ways - the disk-cache version
-  first, then the in-memory rewrite, including that the stdin/stdout concurrency does not deadlock on
-  a real multi-MB track.
-- **`Decoder`'s read-and-pace loop runs on its own OS thread, not the shared asyncio loop** - the same
-  pattern `spotify/pipe.py`'s `PipeReader` already uses for the identical reason: real-time pacing that
-  must never be at the mercy of whatever else the loop happens to be doing. This replaced an earlier
-  version that ran the read/pace loop as asyncio tasks sharing the loop with everything else; that
-  version kept shedding audio ("audio buffer overran") at irregular intervals even after moving to the
-  in-memory cache, mid-track, with no correlation to track transitions - traced to
-  `hls.measure_bitrate_kbps()` (`media/hls.py`) doing synchronous `glob()`/`stat()` calls on the HLS
-  segment directory directly on the shared loop once a second from `_publish_telemetry`
-  (`media/pipeline.py`), which blocks every other coroutine on that thread for however long that
-  filesystem call takes - and the encoder is concurrently writing and renaming segments in that same
-  directory, which is also what an earlier, unrelated HLS-rename failure in this same session pointed
-  at. That call is now wrapped in `asyncio.to_thread` as the direct fix. Moving the decoder to its own
-  thread is a complementary hardening on top, not a replacement for that fix: reading and pacing
-  against ffmpeg's stdout now happens completely independently of the loop, so nothing sharing the
-  loop can starve `_reader`/`_drain` the way the old two-task, queue-backed version could be - but
-  `on_pcm`/`on_finished` still cross back onto the loop through `call_soon_threadsafe`, exactly like
-  `PipeReader` does, so a genuinely stalled loop can still let a backlog of already-correctly-paced
-  chunks arrive at `AudioPacer` in a burst once it unblocks. A dedicated thread needs no separate
-  read-ahead queue the way the shared-loop version did - the OS pipe between ffmpeg and this thread
-  backpressures on its own, the same as the named pipe go-librespot writes into - which is why
-  `QUEUE_SECONDS`/`PREBUFFER_SECONDS` and the reader/drain split are gone entirely rather than just
-  retuned again. **Neither of these was actually the cause of the shedding they were built to fix** -
-  a direct measurement (polling `/api/state` every 150ms while shedding was actively occurring)
-  showed the loop responding in 0-2ms throughout, ruling out a loop stall entirely. Left in as
-  independently-justified hardening (both match this codebase's own established patterns and are
-  simplifications, not just workarounds) rather than reverted, but the actual mechanism behind the
-  shedding is still open - see "Not yet verified".
+- **Every track is fully resolved and decoded to raw PCM in memory (`cache.py`) before it plays**,
+  network fetch, resample and decode all in one ffmpeg pass - not decoded live off the network, and
+  not even decoded lazily at playback time. A CDN reset during that one pass just costs download
+  time - ffmpeg's own `-reconnect` keeps retrying against a target with no realtime deadline to miss -
+  where the same reset landing mid-playback against a paced decoder used to shed audio outright (the
+  "audio buffer overran" case this section used to chase). The queue's head is prefetched while the
+  current track is still playing (`_ensure_next_locked`), so a normal advance is `Decoder` pacing
+  bytes already sitting in RAM rather than a fresh resolve-and-decode; only ever one item is
+  prefetched, since nothing here plays more than one track ahead anyway. A track's cached bytes are a
+  plain `_Cached` reference, dropped the moment it stops being current - natural end, skip, or
+  `stop()` - the same as any other object; there is no file to clean up. Discarding a still-in-flight
+  prefetch has to await it through `asyncio.gather(task, return_exceptions=True)` rather than a bare
+  `try/except Exception` - `CancelledError` has not been an `Exception` subclass since 3.8, so
+  awaiting a cancelled task directly would let it escape and read as the caller itself having been
+  cancelled. Doing the full decode here rather than deferring it to playback means `Decoder` never
+  runs a subprocess at all - see below. Two earlier passes preceded this one: a disk-cache version
+  (real-world evidence on the machine this was built on - an HLS playlist rename failing with
+  "Operation not permitted", ffmpeg processes exiting with Windows' uninitialized-memory-pattern exit
+  codes like `0xCCCCCCC8`, a plain `kill()` taking the full 3s timeout - pointed at antivirus
+  real-time scanning interfering with the cache files, motivating a move to memory instead of asking
+  every install to carve out an exclusion), then an in-memory-but-still-live-decode version (`Decoder`
+  fed a Matroska remux over its own stdin, decoding on demand at playback time). Neither was wrong,
+  exactly, but both left a live ffmpeg process running during the timing-critical part; decoding
+  everything upfront during prefetch removes that variable entirely.
+- **`Decoder` paces already-decoded PCM out to the sink on its own OS thread, not the shared asyncio
+  loop** - the same pattern `spotify/pipe.py`'s `PipeReader` already uses for the identical reason:
+  real-time pacing that must never be at the mercy of whatever else the loop is doing. With no
+  subprocess involved anymore, its whole job is `time.sleep()`-paced chunking of a `bytes` object;
+  `on_pcm`/`on_finished` cross back onto the loop through `call_soon_threadsafe`, exactly like
+  `PipeReader` does. This and moving the full decode into `cache.py` were both built chasing a
+  shedding bug that turned out not to be either of their fault: a direct measurement (polling
+  `/api/state` every 150ms while shedding was actively occurring) showed the loop responding in
+  0-2ms throughout, ruling out a loop stall, and an isolated test of the read/pace math alone showed
+  zero drift over a full track. Both changes are kept anyway as independently-justified
+  simplifications (matching `PipeReader`'s own established pattern, and removing a live process from
+  the timing-critical path), not as the actual fix.
+- **The actual fix was recognizing `AudioPacer`'s 600ms shed cap does not apply to this source the
+  way it does to AirPlay's or Spotify's live, real-time-only feeds.** That cap bounds latency for a
+  source with nothing to buffer ahead of; yt-dlp's track is already fully decoded before playback
+  starts, and each track resets its own pacing reference (a new `Decoder` per track), so whatever
+  small, real rate mismatch exists between this decoder's pacing and `AudioPacer`'s own drain rate -
+  measured live as a steady ~25ms/s climb, cause never fully identified - is bounded by that one
+  track's length rather than compounding across a session. `AudioPacer.push()` now takes an optional
+  `max_latency_ms` override (default unchanged at 600ms for AirPlay and Spotify);
+  `receiver.PACER_MAX_LATENCY_MS` gives yt-dlp 30 seconds instead, which a few seconds of PCM costs
+  nothing to hold next to the whole track already in memory. Verified against the real `AudioPacer`
+  class (not a hand-rolled stand-in - an earlier simulation gave misleading results because its own
+  drain-loop timing did not match the real one closely enough to trust) over a full real track:
+  `dropped_frames` stayed at zero throughout, where the same track reliably shed under the old 600ms
+  cap. A closed-loop correction (trimming `Decoder`'s own sleep against the observed buffer trend)
+  was tried first and rejected - reversing which direction should speed up vs. slow down being
+  genuinely easy to get backwards is why this is called out - since a much wider allowance solves the
+  same problem without needing to precisely rate-match anything at all.
 
 **Serialization and background tasks**
 - Never put a non-finite `float` into anything serialized. `state.dumps` passes `allow_nan=False`, so
@@ -643,34 +640,39 @@ actual public HTTP endpoint end to end (verified so far at the receiver level, n
 existing yt-dlp verification already covers SoundCloud for direct panel playback).
 
 **yt-dlp's cache-before-play path** is verified end to end against real YouTube, driving `YtDlpReceiver`
-directly rather than through the panel: the first track of a session resolves, downloads and starts
-decoding with no prewarm; a second queued track is prefetched while the first is still playing
-(confirmed present in memory before being needed); `control("next")` picks up that prefetch and
-switches without repeating the resolve, with real PCM measured flowing to the sink afterward; `stop()`
-leaves nothing behind (checked via `_decoder`/`_next` both `None`, since there is no cache directory
-left to inspect anymore). This run is also what caught the `-reconnect`/"Option not found" bug and the
-`CancelledError`-vs-`Exception` bug in discarding an in-flight prefetch. The disk-cache version that
-preceded the in-memory rewrite was verified the same way first (file present while prefetching,
-discarded on transition, cache directory empty after `stop()`) before the rewrite replaced it -
-real-world evidence pointed at antivirus interference with the cache files specifically, which is
-what motivated moving the audio into memory rather than continuing to debug file access. The
-stdin-write/stdout-read concurrency in the rewritten `Decoder` was verified against a real multi-MB
-track with no deadlock. Not yet exercised: this path through the real app (panel and public request
-endpoint) rather than the receiver driven directly, and whether moving the cache into memory actually
-resolves the antivirus-shaped symptoms observed against the disk version - that diagnosis was never
-fully confirmed against Defender's own logs, only inferred from ffmpeg's own abnormal exit codes and
-slow process kills.
+directly rather than through the panel: the first track of a session resolves and fully decodes with
+no prewarm; a second queued track is prefetched (resolved and decoded to PCM) while the first is
+still playing, its exact byte count checked against `duration × sample_rate × frame_bytes` from the
+source's own precise duration; `control("next")` picks up that prefetch and switches without
+repeating the resolve, with real PCM measured flowing to the sink afterward; `stop()` leaves nothing
+behind (`_decoder`/`_next` both `None` - there is no file or subprocess to check for anymore either
+way). Two earlier versions of this path were verified the same way before being replaced: a
+disk-cache version (file present while prefetching, discarded on transition, cache directory empty
+after `stop()`), then an in-memory version that still decoded live at playback time over `Decoder`'s
+own stdin (stdin-write/stdout-read concurrency checked against a real multi-MB track with no
+deadlock) - both correctly implemented, but real-world antivirus-shaped symptoms and an unexplained
+shedding bug (see below) motivated moving to the current fully-upfront design instead of continuing
+to debug either. Not yet exercised: this path through the real app (panel and public request
+endpoint) rather than the receiver driven directly, and the antivirus diagnosis from the disk-cache
+era was never confirmed against Defender's own logs, only inferred from ffmpeg's own abnormal exit
+codes and slow process kills - now moot for this path either way, since nothing here touches disk.
 
-**The "audio buffer overran" shedding itself is still unexplained** after both the in-memory rewrite
-and moving `Decoder` to its own thread - confirmed still reproducing live, mid-track, with no
-correlation to track transitions, after every fix above landed. What has been directly ruled out
-rather than just reasoned about: a loop stall (`/api/state` polled every 150ms during an actively
-shedding session came back in 0-2ms throughout, so nothing was blocking the shared loop when the
-shed happened); general CPU/memory contention (sampled live during shedding, both stayed low, and
-neither `python` nor `ffmpeg` nor antivirus appeared among the top CPU consumers); and the shared
-pipeline itself (Spotify, using the exact same `AudioPacer`/`Clock`/encoder on the same machine,
-plays cleanly with no shedding at all - this is specific to the yt-dlp path). A resample-drift
-theory (ffmpeg converting YouTube's 48kHz Opus down to the pipeline's fixed 44100Hz) was tested
-against a real track's precise source duration and came back clean - only the ordinary one-time
-Opus priming-sample skip/discard at the start and end, nothing accumulating. The actual mechanism
-remains open.
+**The "audio buffer overran" shedding is fixed, though its root cause was never pinned down.** It
+survived the in-memory rewrite, moving `Decoder` to its own thread, and a closed-loop correction that
+trimmed the decoder's own pacing against the observed downstream buffer trend - none of which turned
+out to be the actual mechanism. Ruled out directly rather than just reasoned about: a loop stall
+(`/api/state` polled every 150ms during an actively shedding session came back in 0-2ms throughout);
+general CPU/memory contention (sampled live during shedding, both stayed low, neither `python` nor
+`ffmpeg` nor antivirus among the top consumers); the shared pipeline itself (Spotify, on the exact
+same `AudioPacer`/`Clock`/encoder on the same machine, plays cleanly - this was always specific to
+the yt-dlp path); resample drift (ffmpeg converting YouTube's 48kHz Opus to the pipeline's fixed
+44100Hz checked against a real track's precise source duration, clean - only the ordinary one-time
+Opus priming-sample trim, nothing accumulating); and the read/pace math itself (an isolated test of
+`Decoder`'s exact loop against a real track showed zero drift over its full real-time duration). What
+actually made the shedding stop is `AudioPacer.push()`'s `max_latency_ms` override (see the
+"Every track is fully resolved..." bullet above) - a small, real rate mismatch clearly exists between
+this decoder's pacing and `AudioPacer`'s drain rate (measured live as a steady ~25ms/s climb toward
+the old 600ms cap), but since yt-dlp's buffer is now sized to absorb tens of seconds of that per
+track rather than 600ms, whatever the mismatch's source is no longer needs to be found. Verified
+against the real `AudioPacer` class over a full real track: `dropped_frames` at zero throughout,
+where the same exact track reliably shed under the old cap.

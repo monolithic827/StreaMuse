@@ -7,13 +7,13 @@ is the only entry point for both, and only starts playing immediately when the q
 public song request (search()/enqueue()) feeds the same queue, so a request lines up behind
 whatever the panel started instead of needing a queue of its own.
 
-Every track is downloaded into memory (cache.py) before it plays, rather than decoded straight off
-the network - see cache.py for why. The item at the head of the queue is prefetched while the current
-track is still playing, so by the time it is needed the transition is ffmpeg reading bytes already
-sitting in RAM rather than a fresh resolve-and-connect; only ever one item ahead is prefetched, since
-nothing here plays more than one track ahead anyway. A track's cached bytes are just a `_Cached`
-reference dropped the moment it stops being current, whether that is a natural end or a skip - there
-is nothing to explicitly clean up the way a file would need.
+Every track is downloaded and fully decoded to PCM in memory (cache.py) before it plays, rather than
+decoded live off the network - see cache.py for why. The item at the head of the queue is prefetched
+while the current track is still playing, so by the time it is needed the transition is Decoder
+pacing bytes already sitting in RAM rather than a fresh resolve-and-decode; only ever one item ahead
+is prefetched, since nothing here plays more than one track ahead anyway. A track's cached bytes are
+just a `_Cached` reference dropped the moment it stops being current, whether that is a natural end
+or a skip - there is nothing to explicitly clean up the way a file would need.
 """
 
 import asyncio
@@ -29,6 +29,14 @@ from .decoder import Decoder
 from .extractor import TrackInfo, extract_async
 
 THUMBNAIL_TIMEOUT = 10
+
+#: AudioPacer's own default (600ms) is sized for AirPlay's and Spotify's live, real-time-only feeds,
+#: where there is nothing to buffer ahead of. yt-dlp's track is already fully decoded and sitting in
+#: memory before this ever runs, and each track resets its own pacing reference, so any drift is
+#: bounded by that one track's length rather than compounding across a session - a much wider
+#: allowance just lets it sit as harmless lead instead of shedding audio. A few seconds of PCM costs
+#: nothing worth counting in memory next to the whole track already held.
+PACER_MAX_LATENCY_MS = 30_000
 
 #: A public request must not become an arbitrary outbound fetch: yt-dlp's generic extractor will
 #: attempt any scheme urllib understands, not just http(s) - verified against a real yt-dlp install,
@@ -228,7 +236,7 @@ class YtDlpReceiver(Receiver):
 
         decoder = Decoder(self._hub, asyncio.get_running_loop())
         decoder.on_finished = self._on_finished
-        decoder.start(self._deps.ffmpeg, cached.data, self._deliver)
+        decoder.start(cached.data, self._deliver)
         self._decoder = decoder
 
     async def _toggle(self) -> bool:
@@ -243,9 +251,9 @@ class YtDlpReceiver(Receiver):
         decoder, self._decoder = self._decoder, None
         if decoder is not None:
             decoder.on_finished = None
-            # Sync, like spotify/pipe.py's own stop() - a bounded join while ffmpeg's kill()
-            # unblocks the read thread, not something worth threading through to_thread for a
-            # deliberate stop rather than steady playback.
+            # Sync, like spotify/pipe.py's own stop() - a bounded join while the pacing thread
+            # notices _stopping, not something worth threading through to_thread for a deliberate
+            # stop rather than steady playback.
             decoder.stop()
         self._track.clear()
         self._title = ""
@@ -260,7 +268,7 @@ class YtDlpReceiver(Receiver):
 
     def _deliver(self, pcm: bytes) -> None:
         if self._sink is not None:
-            self._sink(pcm)
+            self._sink(pcm, PACER_MAX_LATENCY_MS)
 
 
 async def _fetch(url: str) -> bytes | None:
