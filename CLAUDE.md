@@ -418,6 +418,30 @@ panel still receives the version as a number: nothing validates it there.
 - `cookiesFile` is one Netscape-format `cookies.txt` for both sites, a straight passthrough to
   yt-dlp's `cookiefile` option, which filters by domain on its own - there is no per-source cookie
   setting to keep in sync.
+- **`load()` queues rather than replaces**, so a song request lines up behind whatever the panel
+  already started instead of needing a queue of its own. It always appends to `self._queue` and
+  only starts a decoder itself when the queue was empty - so "play" and "add to queue" are the same
+  call, and which one it looks like depends only on whether something was already playing.
+  `control("next")` and a natural end (the decoder's `on_finished`) both advance the same way: stop
+  (or notice it already stopped), pop the next `state.QueueItem`, resolve and play it. `self._gate`
+  (an `asyncio.Lock`) serializes every path that can start or stop a decoder - `load()`, `control()`,
+  `stop()`, and the advance a natural finish schedules - because a track ending on its own at the
+  same moment as a manual "next" (or two quick loads) could otherwise each see the decoder as free
+  and start one of their own. `_advance_locked()` assumes the caller already holds the gate (every
+  internal caller does); `_advance()` is the gate-acquiring wrapper, used only by `on_finished`'s
+  detached task, which is not already holding anything.
+- **`search()`/`enqueue()` (the public song-request path) reject anything URL-shaped that is not on
+  an explicit `youtube.com`/`youtu.be`/`soundcloud.com` allowlist** - unlike Apple's and Spotify's
+  `search()`, which always hit a fixed catalogue endpoint regardless of what a listener types,
+  yt-dlp's extractors resolve whatever URL they are given, some through a generic fallback that
+  fetches the page directly. Left unrestricted, an anonymous listener behind the tunnel would have
+  an SSRF primitive against the host's own network. Verified against a real yt-dlp install that this
+  is not just an http(s) problem: `ftp://169.254.169.254/` is actually attempted by the generic
+  extractor (it only failed here for want of a reachable FTP server) - so the check is "does this
+  string have a scheme prefix at all", not "is it http(s)", and anything without one is treated as
+  bare text, which only ever becomes a YouTube search and is always safe. `enqueue()` re-checks the
+  same allowlist independently of `search()`, since the id a listener POSTs back is never assumed to
+  be one `search()` actually returned.
 
 **Serialization and background tasks**
 - Never put a non-finite `float` into anything serialized. `state.dumps` passes `allow_nan=False`, so
@@ -541,3 +565,13 @@ age-restricted or private content, since verifying that needs a real account's e
 a real multi-second CDN stall specifically, since nothing here can inject one to order - the read-ahead
 fix is verified by what it measurably does (bank read-ahead) rather than by forcing the stall it is
 meant to absorb.
+
+**yt-dlp song requests** are verified end to end against real YouTube: a bare-text request resolves
+and plays immediately when idle, a second request while the first is playing queues behind it
+without interrupting, and the request-side URL allowlist is verified both ways - allowed hosts
+resolve normally, and a disallowed scheme (`ftp://169.254.169.254/`, chosen because it is a real
+attempt by yt-dlp's own generic extractor, not merely a syntax rejection) is refused by both
+`search()` and `enqueue()` independently. Not yet exercised: the same request flow through the
+actual public HTTP endpoint end to end (verified so far at the receiver level, not through
+`web/public.py`'s cooldowns and JSON handling), and SoundCloud specifically for this path (the
+existing yt-dlp verification already covers SoundCloud for direct panel playback).

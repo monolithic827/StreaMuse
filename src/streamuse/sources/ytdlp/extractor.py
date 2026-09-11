@@ -38,6 +38,9 @@ class TrackInfo:
     artist: str
     thumbnail_url: str
     duration: float
+    #: The canonical page for this track - stable, unlike stream_url, which is a signed CDN link
+    #: tied to the request that resolved it. This is what a request keeps to resolve again later.
+    webpage_url: str
     stream_url: str
     http_headers: dict[str, str]
 
@@ -68,6 +71,7 @@ def extract(query: str, cookies_file: str) -> TrackInfo:
         artist=info.get("uploader") or info.get("artist") or "",
         thumbnail_url=info.get("thumbnail") or "",
         duration=float(info.get("duration") or 0),
+        webpage_url=info.get("webpage_url") or query,
         stream_url=info["url"],
         http_headers=info.get("http_headers") or {},
     )

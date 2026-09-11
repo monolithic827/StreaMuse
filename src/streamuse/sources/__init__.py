@@ -116,9 +116,11 @@ class Receiver:
     async def control(self, command: str) -> bool:
         return False
 
-    async def load(self, query: str) -> bool:
+    async def load(self, query: str, title: str = "", artist: str = "", duration: float = 0.0) -> bool:
         """Overridden only by a source that accepts an on-demand URL or search query rather than
-        waiting for something else to connect."""
+        waiting for something else to connect. title/artist/duration are already known when the
+        caller picked this from a search result, and are only ever a display hint for a source that
+        queues rather than replaces what is already playing."""
         return False
 
     async def search(self, query: str) -> RequestTrack | None:
@@ -182,9 +184,9 @@ class SourceManager:
         receiver = self._active
         return await receiver.control(command) if receiver is not None else False
 
-    async def load(self, query: str) -> bool:
+    async def load(self, query: str, title: str = "", artist: str = "", duration: float = 0.0) -> bool:
         receiver = self._active
-        return await receiver.load(query) if receiver is not None else False
+        return await receiver.load(query, title, artist, duration) if receiver is not None else False
 
     @property
     def request_action(self) -> str:
