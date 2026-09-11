@@ -66,6 +66,11 @@ def extract(query: str, cookies_file: str) -> TrackInfo:
         if info is None:
             raise LookupError(f"no results for '{query}'")
 
+    # A live stream has no fixed length - ffmpeg would pull from an open-ended HLS manifest instead
+    # of a normal file, which the queue's one-track-then-advance model isn't built for.
+    if info.get("is_live"):
+        raise LookupError(f"'{info.get('title') or query}' is live, not a regular video")
+
     return TrackInfo(
         title=info.get("title") or "",
         artist=info.get("uploader") or info.get("artist") or "",
