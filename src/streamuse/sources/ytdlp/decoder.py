@@ -29,8 +29,13 @@ FRAME_BYTES = 4  # s16le stereo
 READ_SIZE = 1 << 16
 
 #: How much read-ahead the queue holds, in seconds of audio - the cushion a stall in reading the
-#: input would drain before it reaches the sink as silence.
-QUEUE_SECONDS = 8.0
+#: input would drain before it reaches the sink as silence. A local file's `_reader` can fill this
+#: almost instantly (nothing paces it the way a network fetch used to), so this stays just large
+#: enough to clear `PREBUFFER_SECONDS` with headroom rather than the much bigger margin a network
+#: stall used to need - a bigger queue does not reach further, it only banks more backlog that a
+#: stall anywhere else in the process (observed: antivirus interfering with ffmpeg's own process
+#: lifetime, not this decoder) would have ready to dump downstream at once.
+QUEUE_SECONDS = 2.5
 QUEUE_SIZE = max(1, round(QUEUE_SECONDS / (READ_SIZE / FRAME_BYTES / SAMPLE_RATE)))
 
 #: How much to bank before `_drain` starts its deadline clock. Without this, the clock starts the
