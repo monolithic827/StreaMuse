@@ -109,10 +109,17 @@ class Decoder:
     async def stop(self) -> None:
         process, self._process = self._process, None
         self.on_finished = None
-        for task in (self._reader_task, self._drain_task, self._log_task):
-            if task is not None:
-                task.cancel()
+        tasks = [t for t in (self._reader_task, self._drain_task, self._log_task) if t is not None]
         self._reader_task = self._drain_task = self._log_task = None
+        for task in tasks:
+            task.cancel()
+        # Cancelling only requests it - awaited here so none is left dangling half-cancelled once
+        # this returns. Left unawaited, a task can still be pending when the loop later stops (at
+        # app shutdown), and gets abandoned rather than unwound: interpreter exit then tries to
+        # close it via GeneratorExit with no running loop left to do it on, printing an ignored
+        # "coroutine ignored GeneratorExit" traceback.
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
         if process is None:
             return

@@ -336,6 +336,15 @@ panel still receives the version as a number: nothing validates it there.
   runs its queue ahead of the rest of the context. The token is cached in `LibrespotApi` and dropped
   only on a 401, because the daemon's handler calls `GetAccessToken(ctx, force=true)` and an
   uncached call is a real login5 round trip for every search a listener types.
+- **This token's search quota is tight enough to hit in ordinary use, not just abuse** - reproduced
+  live from a handful of manual test searches within a couple of minutes, all in a row failing
+  `429`. It is a borrowed session token, not one issued to a registered app with its own quota, so
+  it is not the public Web API's usual generous per-app limit. `search()` reads Spotify's own
+  `Retry-After` off the `429` and will not attempt another search until that many seconds have
+  passed - checked before touching the network at all, not just before touching `/v1/search`, so a
+  still-throttled window costs nothing per listener who tries anyway. A missing or unparseable
+  header - `429`s do not have to carry one - falls back to `DEFAULT_RETRY_AFTER` rather than either
+  retrying immediately or refusing to.
 - `external_volume: true` keeps the broadcast at full scale; Spotify's slider is the listener's
   business, not ours. The AirPlay side ignores its `volume:` messages for the same reason.
 - Password login is gone from Spotify. Credentials arrive by the desktop app handing off over
@@ -527,14 +536,15 @@ details drawer opens.
 
 ## Not yet verified
 
-The **Spotify** path has never run end to end: it needs the patched go-librespot binary described in
-`vendor/go-librespot/README.md`, and the workflow that publishes it has not been run yet - until it
-is, `deps.GO_LIBRESPOT_URL` is a URL for an asset that does not exist. Everything up to that binary - the
-config, the process wrapper, the named pipe reader, the API client - is written and the pipe reader
-is verified against synthetic writers, including reconnect cycles. **Spotify song requests** are
-unverified for the same reason - `add_to_queue` has never been watched move a real queue - though
-the public endpoints, the cooldowns and the off-air gating are checked against a fake source. The
-**Apple** half is verified against the real app: search and lookup resolve real tracks, and the
+The **Spotify** path now has run end to end, against a hand-built go-librespot already sitting in
+`BIN_DIR` (`resolve()` finds a local copy before ever trying a download) - real Connect pairing,
+real audio, `search()` hitting the real `api.spotify.com` and getting back genuine responses,
+`429` included. The auto-download itself is still unconfirmed: the workflow that publishes
+go-librespot to this repo's own release has not been run, so whether `deps.GO_LIBRESPOT_URL` names
+an asset that actually exists remains untested - a machine without a local copy already in place is
+the one case this has not covered. `add_to_queue` is the one piece of song requests still
+unconfirmed - every real search so far has come back `429` before there was a result to enqueue.
+The **Apple** half is verified against the real app: search and lookup resolve real tracks, and the
 `music:` handoff was measured doing exactly what the code now assumes.
 
 `/token` and `/player/add_to_queue` are on go-librespot v0.9.0, which is what `GO_LIBRESPOT_REF` and
