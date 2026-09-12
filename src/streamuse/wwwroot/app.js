@@ -1,7 +1,7 @@
 'use strict';
 
 const METER_BARS = 34;
-const SOURCE_LABELS = { apple: 'Apple Music', spotify: 'Spotify' };
+const SOURCE_LABELS = { apple: 'Apple Music', spotify: 'Spotify', ytdlp: 'yt-dlp' };
 const THEMES = ['Auto', 'Dark', 'Light'];
 
 const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
@@ -117,7 +117,8 @@ function buildView() {
 
     running: running,
     connected: connected,
-    playing: now.playing
+    playing: now.playing,
+    ytdlpActive: source.source === 'ytdlp'
   };
 }
 
@@ -415,6 +416,7 @@ function fillSettings() {
   document.getElementById('set-name').value = settings.receiverName;
   document.getElementById('set-spotify-name').value = settings.spotifyConnectDeviceName;
   document.getElementById('set-key').value = settings.streamKey;
+  document.getElementById('set-cookies').value = settings.cookiesFile;
   document.getElementById('set-vbr').value = settings.videoBitrateKbps;
   document.getElementById('set-abr').value = settings.audioBitrateKbps;
   document.getElementById('set-fps').value = settings.fps;
@@ -450,6 +452,7 @@ function readSettings() {
     receiverName: document.getElementById('set-name').value.trim(),
     spotifyConnectDeviceName: document.getElementById('set-spotify-name').value.trim() || 'StreaMuse',
     streamKey: document.getElementById('set-key').value.trim(),
+    cookiesFile: document.getElementById('set-cookies').value.trim(),
     width: width,
     height: height,
     fps: Number(document.getElementById('set-fps').value),
@@ -524,6 +527,23 @@ for (const button of document.querySelectorAll('[data-main-button]')) {
     }
   });
 }
+
+async function submitYtdlpQuery() {
+  const field = document.getElementById('ytdlp-query');
+  const query = field.value.trim();
+  if (!query) return;
+  try {
+    await post('/api/source/load', { query: query });
+    field.value = '';
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
+document.getElementById('ytdlp-play').addEventListener('click', submitYtdlpQuery);
+document.getElementById('ytdlp-query').addEventListener('keydown', event => {
+  if (event.key === 'Enter') submitYtdlpQuery();
+});
 
 document.querySelector('[data-tunnel-button]').addEventListener('click', async () => {
   const up = state.tunnel.status === 'up' || state.tunnel.status === 'starting';

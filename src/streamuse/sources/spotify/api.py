@@ -8,6 +8,7 @@ desktop app already handed over, so listener requests need nothing registered an
 """
 
 import asyncio
+import time
 
 import aiohttp
 
@@ -20,6 +21,12 @@ COMMANDS = {"playpause": "playpause", "next": "next", "prev": "prev"}
 
 SEARCH_URL = "https://api.spotify.com/v1/search"
 
+#: This token is borrowed from the desktop app's own session rather than issued to a registered
+#: app, so its search quota is tighter than the public Web API's and gets hit in normal use, not
+#: just abuse. Spotify's 429 carries how long to actually wait in Retry-After; this is only the
+#: fallback for when that header is missing or unparseable.
+DEFAULT_RETRY_AFTER = 5.0
+
 
 class LibrespotApi:
     def __init__(self, port: int, hub, on_event) -> None:
@@ -29,6 +36,9 @@ class LibrespotApi:
         self._session: aiohttp.ClientSession | None = None
         self._task: asyncio.Task | None = None
         self._token: str | None = None
+        #: A monotonic deadline, not a bool: retrying the instant it flips would trip the same
+        #: window again, since Spotify's own limiter has not moved either.
+        self._search_retry_after = 0.0
 
     async def start(self) -> None:
         self._session = aiohttp.ClientSession(
@@ -69,6 +79,9 @@ class LibrespotApi:
     async def search(self, query: str) -> RequestTrack | None:
         """One retry, because the cached token is only ever discovered to be stale by being
         refused."""
+        if time.monotonic() < self._search_retry_after:
+            return None
+
         for _ in range(2):
             token = await self._token_for_search()
             if token is None:
@@ -83,6 +96,11 @@ class LibrespotApi:
                     if reply.status == 401:
                         self._token = None
                         continue
+                    if reply.status == 429:
+                        wait = _retry_after_seconds(reply.headers.get("Retry-After"))
+                        self._search_retry_after = time.monotonic() + wait
+                        self._hub.warn(f"spotify: search rate limited - waiting {wait:.0f}s")
+                        return None
                     if reply.status != 200:
                         self._hub.warn(f"spotify: search failed ({reply.status})")
                         return None
@@ -160,6 +178,15 @@ class LibrespotApi:
                     await self._on_event("status", await reply.json())
         except aiohttp.ClientError:
             pass
+
+
+def _retry_after_seconds(header: str | None) -> float:
+    """Spotify sends this as a plain integer count of seconds, not an HTTP-date, but a stray or
+    absent header must not crash a rate-limit response - it is already the bad-news path."""
+    try:
+        return max(0.0, float(header))
+    except (TypeError, ValueError):
+        return DEFAULT_RETRY_AFTER
 
 
 def _first_track(payload: dict) -> RequestTrack | None:

@@ -6,9 +6,11 @@ This file provides guidance to AI coding agents when working with code in this r
 
 StreaMuse **is the speaker**. It advertises itself as an AirPlay device that Apple Music streams to,
 and as a Spotify Connect device that the Spotify app hands playback to, then re-streams what arrives
-as an HLS (`.m3u8`) stream published through a Cloudflare tunnel. One Python package hosts
-everything: two aiohttp servers, the receivers, the encoder pipeline, and a pywebview window showing
-the control panel. Windows-only by design.
+as an HLS (`.m3u8`) stream published through a Cloudflare tunnel. A third source, YouTube and
+SoundCloud through yt-dlp, is not a receiver at all - nothing connects to us, a URL or search typed
+into the panel is resolved and decoded on request. One Python package hosts everything: two aiohttp
+servers, the receivers, the encoder pipeline, and a pywebview window showing the control panel.
+Windows-only by design.
 
 Because audio, metadata and artwork all arrive over the same session, a track can never be
 attributed to the wrong source - which is the whole reason for the receiver design over the WASAPI
@@ -92,6 +94,7 @@ Useful techniques used in practice:
 AirPlayReceiver  mDNS _raop._tcp ─ RTSP :5100 ─ RTP udp 6100-6102 ─┐
 SpotifyReceiver  go-librespot.exe ─ \\.\pipe\streamuse-spotify ────┤ only the selected one runs
                  + its HTTP API on loopback                        │
+YtDlpReceiver    panel URL/search ─ yt-dlp extract ─ ffmpeg decode ┘
                                                                    ▼
                           track + artwork ──> StateHub ──> WebSocket ──> control panel
                           PCM s16le 44.1k ──> LevelMeter + AudioPacer ─┐
@@ -333,6 +336,15 @@ panel still receives the version as a number: nothing validates it there.
   runs its queue ahead of the rest of the context. The token is cached in `LibrespotApi` and dropped
   only on a 401, because the daemon's handler calls `GetAccessToken(ctx, force=true)` and an
   uncached call is a real login5 round trip for every search a listener types.
+- **This token's search quota is tight enough to hit in ordinary use, not just abuse** - reproduced
+  live from a handful of manual test searches within a couple of minutes, all in a row failing
+  `429`. It is a borrowed session token, not one issued to a registered app with its own quota, so
+  it is not the public Web API's usual generous per-app limit. `search()` reads Spotify's own
+  `Retry-After` off the `429` and will not attempt another search until that many seconds have
+  passed - checked before touching the network at all, not just before touching `/v1/search`, so a
+  still-throttled window costs nothing per listener who tries anyway. A missing or unparseable
+  header - `429`s do not have to carry one - falls back to `DEFAULT_RETRY_AFTER` rather than either
+  retrying immediately or refusing to.
 - `external_volume: true` keeps the broadcast at full scale; Spotify's slider is the listener's
   business, not ours. The AirPlay side ignores its `volume:` messages for the same reason.
 - Password login is gone from Spotify. Credentials arrive by the desktop app handing off over
@@ -349,6 +361,109 @@ panel still receives the version as a number: nothing validates it there.
   exe can be running out of a onefile temp extraction that is gone by the next launch while
   `BIN_DIR` survives - so `LibrespotProcess` puts `BIN_DIR` on the child's `PATH` instead of relying
   on the exe's own directory.
+
+**yt-dlp**
+- yt-dlp is a pip dependency, not a downloaded exe like ffmpeg and cloudflared - it has a Python API,
+  PyInstaller bundles it into the exe like any other import, and there is no separate binary for
+  `deps.py` to resolve. Only `sources/ytdlp/extractor.py` imports it; ffmpeg does the actual decode,
+  the same as everywhere else in this app.
+- `YtDlpReceiver` is not a receiver in the AirPlay/Spotify sense - nothing ever connects to it, so
+  `start()` only records the sink and `load()` (called from `/api/source/load`) is what actually
+  begins a track. `SourceManager` and `Receiver` both grew a `load()` alongside `control()` for this;
+  every other source's default just returns `False`.
+- **A resolved stream URL is signed to the request that fetched it.** `extract_info`'s `http_headers`
+  (User-Agent above all) have to travel with the URL to ffmpeg's `-headers`, or YouTube's and
+  SoundCloud's CDNs answer 403 - verified end to end against both.
+- **`_fetch()`'s cover download catches `TimeoutError` alongside `aiohttp.ClientError`** - the
+  session's own timeout raises the former, which is not a subclass of the latter, so a slow or
+  unreachable thumbnail host would otherwise escape the `except` entirely. By the point `load()`
+  calls this, the track is already marked playing and its decoder has not started yet, so an
+  uncaught exception here would crash `load()` with the panel showing "Playing" and no audio ever
+  actually starting. Reproduced live under a flaky connection.
+- yt-dlp's own error reporting prints straight to the console even with `quiet`/`no_warnings` set,
+  ahead of raising - a caller that already turns the same exception into `hub.error` would otherwise
+  show it twice, once outside the log. `extractor._SilentLogger` is the documented way to fully
+  silence it.
+- `cookiesFile` is one Netscape-format `cookies.txt` for both sites, a straight passthrough to
+  yt-dlp's `cookiefile` option, which filters by domain on its own - there is no per-source cookie
+  setting to keep in sync.
+- **`load()` queues rather than replaces**, so a song request lines up behind whatever the panel
+  already started instead of needing a queue of its own. It always appends to `self._queue` and
+  only starts a decoder itself when the queue was empty - so "play" and "add to queue" are the same
+  call, and which one it looks like depends only on whether something was already playing.
+  `control("next")` and a natural end (the decoder's `on_finished`) both advance the same way: stop
+  (or notice it already stopped), pop the next `state.QueueItem`, resolve and play it. `self._gate`
+  (an `asyncio.Lock`) serializes every path that can start or stop a decoder - `load()`, `control()`,
+  `stop()`, and the advance a natural finish schedules - because a track ending on its own at the
+  same moment as a manual "next" (or two quick loads) could otherwise each see the decoder as free
+  and start one of their own. `_advance_locked()` assumes the caller already holds the gate (every
+  internal caller does); `_advance()` is the gate-acquiring wrapper, used only by `on_finished`'s
+  detached task, which is not already holding anything.
+- **`search()`/`enqueue()` (the public song-request path) reject anything URL-shaped that is not on
+  an explicit `youtube.com`/`youtu.be`/`soundcloud.com` allowlist** - unlike Apple's and Spotify's
+  `search()`, which always hit a fixed catalogue endpoint regardless of what a listener types,
+  yt-dlp's extractors resolve whatever URL they are given, some through a generic fallback that
+  fetches the page directly. Left unrestricted, an anonymous listener behind the tunnel would have
+  an SSRF primitive against the host's own network. Verified against a real yt-dlp install that this
+  is not just an http(s) problem: `ftp://169.254.169.254/` is actually attempted by the generic
+  extractor (it only failed here for want of a reachable FTP server) - so the check is "does this
+  string have a scheme prefix at all", not "is it http(s)", and anything without one is treated as
+  bare text, which only ever becomes a YouTube search and is always safe. `enqueue()` re-checks the
+  same allowlist independently of `search()`, since the id a listener POSTs back is never assumed to
+  be one `search()` actually returned.
+- **Every track is fully resolved and decoded to raw PCM in memory (`cache.py`) before it plays**,
+  network fetch, resample and decode all in one ffmpeg pass - not decoded live off the network, and
+  not even decoded lazily at playback time. A CDN reset during that one pass just costs download
+  time - ffmpeg's own `-reconnect` keeps retrying against a target with no realtime deadline to miss -
+  where the same reset landing mid-playback against a paced decoder used to shed audio outright (the
+  "audio buffer overran" case this section used to chase). The queue's head is prefetched while the
+  current track is still playing (`_ensure_next_locked`), so a normal advance is `Decoder` pacing
+  bytes already sitting in RAM rather than a fresh resolve-and-decode; only ever one item is
+  prefetched, since nothing here plays more than one track ahead anyway. A track's cached bytes are a
+  plain `_Cached` reference, dropped the moment it stops being current - natural end, skip, or
+  `stop()` - the same as any other object; there is no file to clean up. Discarding a still-in-flight
+  prefetch has to await it through `asyncio.gather(task, return_exceptions=True)` rather than a bare
+  `try/except Exception` - `CancelledError` has not been an `Exception` subclass since 3.8, so
+  awaiting a cancelled task directly would let it escape and read as the caller itself having been
+  cancelled. Doing the full decode here rather than deferring it to playback means `Decoder` never
+  runs a subprocess at all - see below. Two earlier passes preceded this one: a disk-cache version
+  (real-world evidence on the machine this was built on - an HLS playlist rename failing with
+  "Operation not permitted", ffmpeg processes exiting with Windows' uninitialized-memory-pattern exit
+  codes like `0xCCCCCCC8`, a plain `kill()` taking the full 3s timeout - pointed at antivirus
+  real-time scanning interfering with the cache files, motivating a move to memory instead of asking
+  every install to carve out an exclusion), then an in-memory-but-still-live-decode version (`Decoder`
+  fed a Matroska remux over its own stdin, decoding on demand at playback time). Neither was wrong,
+  exactly, but both left a live ffmpeg process running during the timing-critical part; decoding
+  everything upfront during prefetch removes that variable entirely.
+- **`Decoder` paces already-decoded PCM out to the sink on its own OS thread, not the shared asyncio
+  loop** - the same pattern `spotify/pipe.py`'s `PipeReader` already uses for the identical reason:
+  real-time pacing that must never be at the mercy of whatever else the loop is doing. With no
+  subprocess involved anymore, its whole job is `time.sleep()`-paced chunking of a `bytes` object;
+  `on_pcm`/`on_finished` cross back onto the loop through `call_soon_threadsafe`, exactly like
+  `PipeReader` does. This and moving the full decode into `cache.py` were both built chasing a
+  shedding bug that turned out not to be either of their fault: a direct measurement (polling
+  `/api/state` every 150ms while shedding was actively occurring) showed the loop responding in
+  0-2ms throughout, ruling out a loop stall, and an isolated test of the read/pace math alone showed
+  zero drift over a full track. Both changes are kept anyway as independently-justified
+  simplifications (matching `PipeReader`'s own established pattern, and removing a live process from
+  the timing-critical path), not as the actual fix.
+- **The actual fix was recognizing `AudioPacer`'s 600ms shed cap does not apply to this source the
+  way it does to AirPlay's or Spotify's live, real-time-only feeds.** That cap bounds latency for a
+  source with nothing to buffer ahead of; yt-dlp's track is already fully decoded before playback
+  starts, and each track resets its own pacing reference (a new `Decoder` per track), so whatever
+  small, real rate mismatch exists between this decoder's pacing and `AudioPacer`'s own drain rate -
+  measured live as a steady ~25ms/s climb, cause never fully identified - is bounded by that one
+  track's length rather than compounding across a session. `AudioPacer.push()` now takes an optional
+  `max_latency_ms` override (default unchanged at 600ms for AirPlay and Spotify);
+  `receiver.PACER_MAX_LATENCY_MS` gives yt-dlp 30 seconds instead, which a few seconds of PCM costs
+  nothing to hold next to the whole track already in memory. Verified against the real `AudioPacer`
+  class (not a hand-rolled stand-in - an earlier simulation gave misleading results because its own
+  drain-loop timing did not match the real one closely enough to trust) over a full real track:
+  `dropped_frames` stayed at zero throughout, where the same track reliably shed under the old 600ms
+  cap. A closed-loop correction (trimming `Decoder`'s own sleep against the observed buffer trend)
+  was tried first and rejected - reversing which direction should speed up vs. slow down being
+  genuinely easy to get backwards is why this is called out - since a much wider allowance solves the
+  same problem without needing to precisely rate-match anything at all.
 
 **Serialization and background tasks**
 - Never put a non-finite `float` into anything serialized. `state.dumps` passes `allow_nan=False`, so
@@ -434,14 +549,15 @@ details drawer opens.
 
 ## Not yet verified
 
-The **Spotify** path has never run end to end: it needs the patched go-librespot binary described in
-`vendor/go-librespot/README.md`, and the workflow that publishes it has not been run yet - until it
-is, `deps.GO_LIBRESPOT_URL` is a URL for an asset that does not exist. Everything up to that binary - the
-config, the process wrapper, the named pipe reader, the API client - is written and the pipe reader
-is verified against synthetic writers, including reconnect cycles. **Spotify song requests** are
-unverified for the same reason - `add_to_queue` has never been watched move a real queue - though
-the public endpoints, the cooldowns and the off-air gating are checked against a fake source. The
-**Apple** half is verified against the real app: search and lookup resolve real tracks, and the
+The **Spotify** path now has run end to end, against a hand-built go-librespot already sitting in
+`BIN_DIR` (`resolve()` finds a local copy before ever trying a download) - real Connect pairing,
+real audio, `search()` hitting the real `api.spotify.com` and getting back genuine responses,
+`429` included. The auto-download itself is still unconfirmed: the workflow that publishes
+go-librespot to this repo's own release has not been run, so whether `deps.GO_LIBRESPOT_URL` names
+an asset that actually exists remains untested - a machine without a local copy already in place is
+the one case this has not covered. `add_to_queue` is the one piece of song requests still
+unconfirmed - every real search so far has come back `429` before there was a result to enqueue.
+The **Apple** half is verified against the real app: search and lookup resolve real tracks, and the
 `music:` handoff was measured doing exactly what the code now assumes.
 
 `/token` and `/player/add_to_queue` are on go-librespot v0.9.0, which is what `GO_LIBRESPOT_REF` and
@@ -460,3 +576,63 @@ quiet.
 
 The pipeline, both web surfaces, the tunnel, the frozen exe and the panel have been verified by
 running them.
+
+The **yt-dlp** path is verified end to end against real YouTube and SoundCloud, including a search
+query, resolving a real signed URL, ffmpeg decoding it with the required headers, real-time pacing,
+pause/resume back-pressuring the decode, and both a bad URL and a bad cookies file failing cleanly
+without taking the receiver down. The read-ahead queue is verified too: mid-track it measurably holds
+several seconds banked ahead of real-time consumption, and pause/resume/next/natural-finish all still
+behave the same as before it was added; so is the "unclosed transport" fix, confirmed gone across a
+real multi-track-transition run. Not yet exercised: a cookies file that actually unlocks
+age-restricted or private content, since verifying that needs a real account's exported cookies; and
+a real multi-second CDN stall specifically, since nothing here can inject one to order - the read-ahead
+fix is verified by what it measurably does (bank read-ahead) rather than by forcing the stall it is
+meant to absorb.
+
+**yt-dlp song requests** are verified end to end against real YouTube: a bare-text request resolves
+and plays immediately when idle, a second request while the first is playing queues behind it
+without interrupting, and the request-side URL allowlist is verified both ways - allowed hosts
+resolve normally, and a disallowed scheme (`ftp://169.254.169.254/`, chosen because it is a real
+attempt by yt-dlp's own generic extractor, not merely a syntax rejection) is refused by both
+`search()` and `enqueue()` independently. Not yet exercised: the same request flow through the
+actual public HTTP endpoint end to end (verified so far at the receiver level, not through
+`web/public.py`'s cooldowns and JSON handling), and SoundCloud specifically for this path (the
+existing yt-dlp verification already covers SoundCloud for direct panel playback).
+
+**yt-dlp's cache-before-play path** is verified end to end against real YouTube, driving `YtDlpReceiver`
+directly rather than through the panel: the first track of a session resolves and fully decodes with
+no prewarm; a second queued track is prefetched (resolved and decoded to PCM) while the first is
+still playing, its exact byte count checked against `duration × sample_rate × frame_bytes` from the
+source's own precise duration; `control("next")` picks up that prefetch and switches without
+repeating the resolve, with real PCM measured flowing to the sink afterward; `stop()` leaves nothing
+behind (`_decoder`/`_next` both `None` - there is no file or subprocess to check for anymore either
+way). Two earlier versions of this path were verified the same way before being replaced: a
+disk-cache version (file present while prefetching, discarded on transition, cache directory empty
+after `stop()`), then an in-memory version that still decoded live at playback time over `Decoder`'s
+own stdin (stdin-write/stdout-read concurrency checked against a real multi-MB track with no
+deadlock) - both correctly implemented, but real-world antivirus-shaped symptoms and an unexplained
+shedding bug (see below) motivated moving to the current fully-upfront design instead of continuing
+to debug either. Not yet exercised: this path through the real app (panel and public request
+endpoint) rather than the receiver driven directly, and the antivirus diagnosis from the disk-cache
+era was never confirmed against Defender's own logs, only inferred from ffmpeg's own abnormal exit
+codes and slow process kills - now moot for this path either way, since nothing here touches disk.
+
+**The "audio buffer overran" shedding is fixed, though its root cause was never pinned down.** It
+survived the in-memory rewrite, moving `Decoder` to its own thread, and a closed-loop correction that
+trimmed the decoder's own pacing against the observed downstream buffer trend - none of which turned
+out to be the actual mechanism. Ruled out directly rather than just reasoned about: a loop stall
+(`/api/state` polled every 150ms during an actively shedding session came back in 0-2ms throughout);
+general CPU/memory contention (sampled live during shedding, both stayed low, neither `python` nor
+`ffmpeg` nor antivirus among the top consumers); the shared pipeline itself (Spotify, on the exact
+same `AudioPacer`/`Clock`/encoder on the same machine, plays cleanly - this was always specific to
+the yt-dlp path); resample drift (ffmpeg converting YouTube's 48kHz Opus to the pipeline's fixed
+44100Hz checked against a real track's precise source duration, clean - only the ordinary one-time
+Opus priming-sample trim, nothing accumulating); and the read/pace math itself (an isolated test of
+`Decoder`'s exact loop against a real track showed zero drift over its full real-time duration). What
+actually made the shedding stop is `AudioPacer.push()`'s `max_latency_ms` override (see the
+"Every track is fully resolved..." bullet above) - a small, real rate mismatch clearly exists between
+this decoder's pacing and `AudioPacer`'s drain rate (measured live as a steady ~25ms/s climb toward
+the old 600ms cap), but since yt-dlp's buffer is now sized to absorb tens of seconds of that per
+track rather than 600ms, whatever the mismatch's source is no longer needs to be found. Verified
+against the real `AudioPacer` class over a full real track: `dropped_frames` at zero throughout,
+where the same exact track reliably shed under the old cap.

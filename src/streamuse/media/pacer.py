@@ -36,8 +36,12 @@ class AudioPacer:
         self._dropped_frames = 0
         self.has_signal = False
 
-    def push(self, chunk: bytes) -> None:
-        """Called from receiver threads as well as the loop."""
+    def push(self, chunk: bytes, max_latency_ms: int | None = None) -> None:
+        """Called from receiver threads as well as the loop. `max_latency_ms` overrides the default
+        cap for a caller that already holds its whole source in memory (yt-dlp's fully-decoded
+        track, not AirPlay's or Spotify's live, real-time-only feeds) - there is no live source to
+        stay close to, and each track gets a fresh pacing reference, so a wider allowance just lets
+        a small, per-track-bounded drift sit as harmless lead instead of shedding audio."""
         if not chunk:
             return
 
@@ -46,7 +50,8 @@ class AudioPacer:
             self._pending_bytes += len(chunk)
 
             # Shed oldest rather than accumulate unbounded latency when the source outruns the clock.
-            limit = MAX_LATENCY_MS * self.sample_rate // 1000 * BYTES_PER_FRAME
+            limit_ms = MAX_LATENCY_MS if max_latency_ms is None else max_latency_ms
+            limit = limit_ms * self.sample_rate // 1000 * BYTES_PER_FRAME
             while self._pending_bytes > limit and len(self._pending) > 1:
                 dropped = self._pending.popleft()
                 lost = len(dropped) - self._head_offset

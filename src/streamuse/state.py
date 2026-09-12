@@ -39,6 +39,17 @@ class Requested:
 
 
 @dataclass(frozen=True)
+class QueueItem:
+    """A track waiting behind the one yt-dlp is currently playing. title/artist/duration are
+    already known when queued from a search result, empty when queued from a pasted link - either
+    way the query is what actually gets resolved and played once its turn comes."""
+    query: str
+    title: str = ""
+    artist: str = ""
+    duration: float = 0.0
+
+
+@dataclass(frozen=True)
 class NowPlaying:
     title: str = ""
     artist: str = ""
