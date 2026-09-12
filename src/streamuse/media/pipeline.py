@@ -228,8 +228,7 @@ class StreamPipeline:
                 encoder = session.encoder
                 # Off the loop: this globs and stats the HLS segment directory, and a stall in that
                 # filesystem call - the encoder is concurrently writing and renaming segments in the
-                # same directory - would otherwise block every other coroutine on this thread too,
-                # the yt-dlp decoder's own real-time pacing included.
+                # same directory - would otherwise block every other coroutine on this thread too.
                 bitrate = await asyncio.to_thread(hls.measure_bitrate_kbps)
                 self._hub.set_encoder(EncoderState(
                     RUNNING,
