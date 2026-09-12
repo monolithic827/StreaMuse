@@ -16,6 +16,10 @@ import yt_dlp
 #: instead, same as yt-dlp's own CLI.
 DEFAULT_SEARCH = "ytsearch1"
 
+#: Long enough for any ordinary track; a full album, mix or podcast pasted by mistake would otherwise
+#: tie up the queue - and hold its whole decode in memory, see cache.py - for its entire length.
+MAX_DURATION_SECONDS = 15 * 60
+
 
 class _SilentLogger:
     """quiet/no_warnings still let yt-dlp print a raw ERROR line before raising - the caller already
@@ -71,11 +75,16 @@ def extract(query: str, cookies_file: str) -> TrackInfo:
     if info.get("is_live"):
         raise LookupError(f"'{info.get('title') or query}' is live, not a regular video")
 
+    duration = float(info.get("duration") or 0)
+    if duration > MAX_DURATION_SECONDS:
+        raise LookupError(
+            f"'{info.get('title') or query}' is over {MAX_DURATION_SECONDS // 60} minutes - too long to queue")
+
     return TrackInfo(
         title=info.get("title") or "",
         artist=info.get("uploader") or info.get("artist") or "",
         thumbnail_url=info.get("thumbnail") or "",
-        duration=float(info.get("duration") or 0),
+        duration=duration,
         webpage_url=info.get("webpage_url") or query,
         stream_url=info["url"],
         http_headers=info.get("http_headers") or {},

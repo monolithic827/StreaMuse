@@ -153,6 +153,10 @@ class YtDlpReceiver(Receiver):
 
         try:
             info = await extract_async(query, self._settings.cookiesFile)
+        except LookupError:
+            # A deliberate rejection with a message already safe to show a listener (no results,
+            # live, too long) - let it reach the public search response instead of being swallowed.
+            raise
         except Exception as exc:
             self._hub.warn(f"yt-dlp: request search for '{query}' failed - {exc}")
             return None
