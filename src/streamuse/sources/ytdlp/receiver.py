@@ -238,7 +238,7 @@ class YtDlpReceiver(Receiver):
         if cached.info.thumbnail_url:
             self._artwork.set(await _fetch(cached.info.thumbnail_url))
 
-        decoder = Decoder(self._hub, asyncio.get_running_loop())
+        decoder = Decoder(asyncio.get_running_loop())
         decoder.on_finished = self._on_finished
         decoder.start(cached.data, self._deliver)
         self._decoder = decoder

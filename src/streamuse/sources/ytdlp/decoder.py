@@ -30,8 +30,7 @@ MAX_CATCH_UP_SECONDS = 0.5
 class Decoder:
     """One instance paces exactly one track's already-decoded PCM; a new one is made for the next."""
 
-    def __init__(self, hub, loop) -> None:
-        self._hub = hub
+    def __init__(self, loop) -> None:
         self._loop = loop
         self._thread: threading.Thread | None = None
         self._stopping = threading.Event()
