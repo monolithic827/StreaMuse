@@ -374,52 +374,12 @@ panel still receives the version as a number: nothing validates it there.
 - **A resolved stream URL is signed to the request that fetched it.** `extract_info`'s `http_headers`
   (User-Agent above all) have to travel with the URL to ffmpeg's `-headers`, or YouTube's and
   SoundCloud's CDNs answer 403 - verified end to end against both.
-- **ffmpeg decoding a network URL runs far faster than playback**, so draining its stdout as fast as
-  bytes arrive would hand the pacer a whole track in a few seconds, same as the Spotify pipe failure
-  this same section already describes. `sources/ytdlp/decoder.py` paces its output to real time the
-  same way `PipeReader` does, but natively async - ffmpeg's stdout is already a non-blocking asyncio
-  pipe, so no thread is needed.
-- **Reading and pacing are two separate tasks, not one, because fetching over the internet stalls in
-  a way a local named pipe or RTP stream never does** - a CDN throttling the connection, or ffmpeg's
-  own `-reconnect` waiting out a dropped one. Pacing directly off stdout (the first cut of this, and
-  what `PipeReader` still does) has nothing to absorb a stall with: it reaches the sink as silence
-  immediately, which is what "audio pauses for a moment, then falls behind" turned out to be -
-  reproduced by loading a real track and logging delivery gaps, and fixed by adding the second task.
-  `_reader` fills a bounded queue as fast as ffmpeg produces data - unthrottled beyond the queue's own
-  capacity, so a fast stretch banks several seconds of read-ahead - and `_drain` paces its way through
-  that queue on its own clock, decoupled from when each chunk actually arrived. Measured: mid-track,
-  the queue holds 4-6 seconds banked even though `_drain` never runs ahead of real time itself - that
-  banked cushion is what a stall now drains before anything reaches the sink as silence. `QUEUE_SIZE`
-  costs nothing worth counting in memory for how much it buys. Pausing (`playpause`) stops `_drain`,
-  not `_reader`: the queue fills first, and only once it is full does `_reader` stop draining stdout -
-  at that point ffmpeg's own stdout pipe fills too and back-pressures the decode, the same role a
-  small pipe buffer plays for go-librespot, just reached later than before.
-- The EOF marker `_reader` puts on a real end of stream travels through the same queue as the audio
-  ahead of it, so `_drain` - and therefore `on_finished` - only sees it after pacing out everything
-  queued first. Firing `on_finished` the moment ffmpeg's stdout closes, the way it worked pre-queue,
-  would advance to the next track while several seconds of the current one were still unplayed.
-- **`_drain` primes a small cushion (`PREBUFFER_SECONDS`) before starting its deadline clock**,
-  rather than starting it the instant the decoder does. Without this, connection churn during
-  startup (a slow TLS handshake, an early `-reconnect`) reads as "already behind" the moment the
-  clock starts, which trips the catch-up path immediately - reproduced live: a track opened with a
-  few seconds of reconnect churn, audibly tried to catch up, got partially shed downstream (logged
-  as "audio buffer overran"), and settled into a permanent partial lag for the rest of the track
-  rather than a one-off startup delay. Priming first lets that churn resolve before the clock has
-  anything to be "behind" against.
 - **`_fetch()`'s cover download catches `TimeoutError` alongside `aiohttp.ClientError`** - the
   session's own timeout raises the former, which is not a subclass of the latter, so a slow or
   unreachable thumbnail host would otherwise escape the `except` entirely. By the point `load()`
   calls this, the track is already marked playing and its decoder has not started yet, so an
   uncaught exception here would crash `load()` with the panel showing "Playing" and no audio ever
   actually starting. Reproduced live under a flaky connection.
-- **`Decoder.stop()` explicitly closes `process._transport`.** One track is one `Decoder`, so this
-  runs on every track change rather than once per stream session - killing the process and letting
-  its stdin/stdout/stderr pipe transports get cleaned up by their own `__del__` (as ffmpeg.py's
-  encoder and Spotify's `LibrespotProcess` still do, being long-lived enough that it was never worth
-  chasing) means whichever track ends the session leaves them for the garbage collector, which on
-  the Windows proactor loop tries to format an "unclosed transport" warning against a socket that is
-  by then already invalid and prints an ugly traceback failing to do it - reproducible on every track
-  change, confirmed gone once this closes the transport explicitly instead.
 - yt-dlp's own error reporting prints straight to the console even with `quiet`/`no_warnings` set,
   ahead of raising - a caller that already turns the same exception into `hub.error` would otherwise
   show it twice, once outside the log. `extractor._SilentLogger` is the documented way to fully
