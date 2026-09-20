@@ -15,7 +15,7 @@ SAMPLE_RATE = 44100
 
 PUBLISH_INTERVAL = 1.0
 
-LABELS = {"apple": "Apple Music", "spotify": "Spotify"}
+LABELS = {"apple": "Apple Music", "spotify": "Spotify", "ytdlp": "yt-dlp"}
 
 
 class TrackState:
@@ -61,6 +61,11 @@ class TrackState:
     def snapshot(self, artwork_version: int) -> NowPlaying:
         return NowPlaying(self.title, self.artist, self.album, self.playing,
                           self.position, self.duration, artwork_version)
+
+
+class Rejected(Exception):
+    """A search refused on purpose, with a message already safe to show a listener - unlike an
+    extraction failure, which carries whatever the underlying library had to say."""
 
 
 @dataclass(frozen=True)
@@ -114,6 +119,11 @@ class Receiver:
         raise NotImplementedError
 
     async def control(self, command: str) -> bool:
+        return False
+
+    async def load(self, query: str) -> bool:
+        """Overridden only by a source that accepts an on-demand URL or search query rather than
+        waiting for something else to connect."""
         return False
 
     async def search(self, query: str) -> RequestTrack | None:
@@ -176,6 +186,10 @@ class SourceManager:
     async def control(self, command: str) -> bool:
         receiver = self._active
         return await receiver.control(command) if receiver is not None else False
+
+    async def load(self, query: str) -> bool:
+        receiver = self._active
+        return await receiver.load(query) if receiver is not None else False
 
     @property
     def request_action(self) -> str:

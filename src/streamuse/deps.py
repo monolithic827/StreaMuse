@@ -1,9 +1,12 @@
-"""Resolves ffmpeg, cloudflared and go-librespot, downloading whatever is missing into the app's own
-bin folder.
+"""Resolves ffmpeg, cloudflared, go-librespot and yt-dlp, downloading whatever is missing into the
+app's own bin folder.
 
 The exe ships ffmpeg and cloudflared, so those two never download for the people who download one.
 go-librespot always does: it is a patched build that nothing else distributes, published under its
-own tag by .github/workflows/go-librespot.yml - see vendor/go-librespot/README.md."""
+own tag by .github/workflows/go-librespot.yml - see vendor/go-librespot/README.md. yt-dlp always
+does too, and tracks latest rather than a pinned ref on purpose - its extractors break whenever
+YouTube changes, and upstream ships releases at that cadence, so a fix must not need a StreaMuse
+build to reach anyone."""
 
 import asyncio
 import os
@@ -31,6 +34,7 @@ GO_LIBRESPOT_URL = (
     "https://github.com/monolithic827/StreaMuse/releases/download/"
     f"go-librespot-{GO_LIBRESPOT_REF}/go-librespot-win-x64.zip"
 )
+YT_DLP_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
 
 USER_AGENT = "StreaMuse/1.0"
 
@@ -41,6 +45,7 @@ class DependencyManager:
         self._gate = asyncio.Lock()
         self.ffmpeg: str | None = None
         self.cloudflared: str | None = None
+        self.yt_dlp: str | None = None
 
     @property
     def go_librespot(self) -> str | None:
@@ -57,11 +62,13 @@ class DependencyManager:
             await self._ensure_go_librespot()
             self.ffmpeg = await self._ensure_ffmpeg()
             self.cloudflared = await self._ensure_single("cloudflared.exe", CLOUDFLARED_URL, "cloudflared")
+            self.yt_dlp = await self._ensure_single("yt-dlp.exe", YT_DLP_URL, "yt-dlp")
 
             self._hub.set_dependencies([
                 DependencyView("ffmpeg", self.ffmpeg),
                 DependencyView("cloudflared", self.cloudflared),
                 DependencyView("go-librespot", self.go_librespot),
+                DependencyView("yt-dlp", self.yt_dlp),
             ])
 
     async def _ensure_ffmpeg(self) -> str | None:

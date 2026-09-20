@@ -18,6 +18,7 @@ from .media.pipeline import StreamPipeline
 from .sources import SAMPLE_RATE, SourceManager
 from .sources.airplay.receiver import AirPlayReceiver
 from .sources.spotify.receiver import SpotifyReceiver
+from .sources.ytdlp.receiver import YtDlpReceiver
 from .state import StateHub
 from .tunnel import CloudflaredTunnel
 from .web import control, public
@@ -64,6 +65,7 @@ def build(hub, settings, control_port: int, public_port: int):
     sources = SourceManager(settings, hub, artwork, pipeline.push_audio, {
         "apple": AirPlayReceiver(settings, hub, artwork),
         "spotify": SpotifyReceiver(settings, hub, artwork, deps),
+        "ytdlp": YtDlpReceiver(settings, hub, artwork, deps),
     })
 
     control_app = control.build_app(

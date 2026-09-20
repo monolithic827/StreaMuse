@@ -75,6 +75,17 @@ def build_app(hub, deps, artwork, settings, pipeline, tunnel, sources, public_po
             raise web.HTTPInternalServerError(text="the source is not accepting commands")
         return web.Response()
 
+    async def source_load(request):
+        try:
+            query = (await request.json()).get("query", "").strip()
+        except ValueError:
+            raise web.HTTPBadRequest()
+        if not query:
+            raise web.HTTPBadRequest(text="query is empty")
+        if not await sources.load(query):
+            raise web.HTTPInternalServerError(text="the source is not accepting a URL - pick it first")
+        return web.Response()
+
     async def request_open(request):
         track_id = (await request.json()).get("id") or ""
         if not await sources.open_request(track_id):
@@ -104,6 +115,7 @@ def build_app(hub, deps, artwork, settings, pipeline, tunnel, sources, public_po
     app.router.add_post("/api/tunnel/stop", tunnel_stop)
     app.router.add_post("/api/deps/refresh", deps_refresh)
     app.router.add_post("/api/player/{command}", player)
+    app.router.add_post("/api/source/load", source_load)
     app.router.add_post("/api/requests/open", request_open)
     app.router.add_post("/api/requests/drop", request_drop)
     app.router.add_get("/ws", websocket)

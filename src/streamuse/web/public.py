@@ -19,6 +19,7 @@ from aiohttp import web
 
 from .. import paths
 from ..artwork import content_type_of
+from ..sources import Rejected
 from ..state import RUNNING, dumps
 
 #: The only files this port will serve, and the type each is sent as.
@@ -250,7 +251,11 @@ async def _serve_search(request: web.Request, sources, searches: Cooldown) -> we
     if not searches.take(request):
         return _json({"error": "One search at a time - try again in a moment."}, 429)
 
-    found = await sources.search(query)
+    try:
+        found = await sources.search(query)
+    except Rejected as exc:
+        return _json({"error": str(exc)}, 400)
+
     if found is None or not found.id:
         return _json({"found": False})
 

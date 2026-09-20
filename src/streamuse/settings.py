@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass, fields
 
 from . import paths
 
-SOURCES = ("apple", "spotify")
+SOURCES = ("apple", "spotify", "ytdlp")
 TUNNEL_MODES = ("Quick", "Named")
 THEMES = ("Auto", "Dark", "Light")
 
@@ -24,6 +24,10 @@ class Settings:
     #: phone's Connect list and Apple Music's AirPlay list are different audiences a user may
     #: reasonably want labelled differently.
     spotifyConnectDeviceName: str = "StreaMuse"
+
+    #: Netscape-format cookies.txt passed to yt-dlp, so an age-restricted or private YouTube video
+    #: or a private SoundCloud track resolves the same as a public one. Empty means yt-dlp gets none.
+    cookiesFile: str = ""
 
     width: int = 1280
     height: int = 720
@@ -50,6 +54,7 @@ class Settings:
         self.streamKey = _sanitize_key(self.streamKey)
         self.receiverName = (self.receiverName or "").strip()[:63] or "StreaMuse"
         self.spotifyConnectDeviceName = (self.spotifyConnectDeviceName or "").strip()[:63] or "StreaMuse"
+        self.cookiesFile = (self.cookiesFile or "").strip()[:1024]
         self.width = _clamp(_even_up(self.width), 256, 3840)
         self.height = _clamp(_even_up(self.height), 256, 2160)
         self.fps = _clamp(self.fps, 1, 30)

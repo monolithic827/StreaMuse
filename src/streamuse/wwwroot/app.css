@@ -305,6 +305,17 @@ body {
   display: none;
 }
 
+.ytdlp-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.ytdlp-row[hidden] {
+  display: none;
+}
+
 .target-row select {
   flex: 1;
   min-width: 0;
@@ -552,6 +563,12 @@ body.log-closed .health-panel {
 }
 
 #named-fields[hidden] {
+  display: none;
+}
+
+/* .card sets its own display:flex in styles.css, which otherwise beats the plain [hidden] rule at
+   equal specificity - same trap .target-row and .ytdlp-row already have their own override for. */
+#requests-card[hidden] {
   display: none;
 }
 

@@ -56,13 +56,14 @@ class StreamPipeline:
     def running(self) -> bool:
         return self._session is not None
 
-    def push_audio(self, chunk: bytes) -> None:
+    def push_audio(self, chunk: bytes, max_latency_ms: int | None = None) -> None:
         """The sink every receiver feeds. Dropped while no session exists, so a receiver's lifetime
-        stays independent of the encoder's."""
+        stays independent of the encoder's. `max_latency_ms` is passed straight through to
+        AudioPacer.push() - see there for who wants a wider allowance and why."""
         if self._session is None:
             return
         self._meter.add(chunk)
-        self._pacer.push(chunk)
+        self._pacer.push(chunk, max_latency_ms)
 
     async def start(self) -> bool:
         async with self._gate:
@@ -225,9 +226,13 @@ class StreamPipeline:
                     self._hub.warn(f"audio buffer overran - {shed}s shed to stay in sync")
 
                 encoder = session.encoder
+                # Off the loop: this globs and stats the HLS segment directory, and a stall in that
+                # filesystem call - the encoder is concurrently writing and renaming segments in the
+                # same directory - would otherwise block every other coroutine on this thread too.
+                bitrate = await asyncio.to_thread(hls.measure_bitrate_kbps)
                 self._hub.set_encoder(EncoderState(
                     RUNNING,
-                    hls.measure_bitrate_kbps(),
+                    bitrate,
                     self._settings.fps,
                     encoder.dropped_frames if encoder else 0,
                     self._clock.elapsed_seconds,
