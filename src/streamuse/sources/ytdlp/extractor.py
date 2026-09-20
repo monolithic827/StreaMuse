@@ -1,18 +1,21 @@
 """Resolves a YouTube or SoundCloud URL, or a plain search query, to a direct audio stream plus
-display metadata, through yt-dlp's Python API. There is no build of yt-dlp that also does the audio
-decode this needs, so only extraction happens here - ffmpeg, already a dependency, decodes the URL
-this returns the same way it decodes everything else in this app.
+display metadata, by running yt-dlp.exe and reading the JSON it dumps. It only ever extracts -
+ffmpeg, already a dependency, decodes the URL this returns the same way it decodes everything else
+in this app.
 
 Both sites hand back a signed CDN URL tied to the request that fetched it, so the headers yt-dlp
 used (User-Agent above all) have to travel with it or the CDN answers 403 to ffmpeg.
 """
 
 import asyncio
+import json
+import subprocess
 from dataclasses import dataclass
 
-import yt_dlp
-
+from ... import jobs
 from .. import Rejected
+
+CREATE_NO_WINDOW = 0x08000000
 
 #: A bare query (not a URL) searches YouTube; "scsearch1:" prefixes a query to search SoundCloud
 #: instead, same as yt-dlp's own CLI.
@@ -21,21 +24,6 @@ DEFAULT_SEARCH = "ytsearch1"
 #: Long enough for any ordinary track; a full album, mix or podcast pasted by mistake would otherwise
 #: tie up the queue - and hold its whole decode in memory, see cache.py - for its entire length.
 MAX_DURATION_SECONDS = 15 * 60
-
-
-class _SilentLogger:
-    """quiet/no_warnings still let yt-dlp print a raw ERROR line before raising - the caller already
-    turns the same exception into a hub.error, so this drops yt-dlp's own copy instead of leaking
-    it straight to the console."""
-
-    def debug(self, message: str) -> None:
-        pass
-
-    def warning(self, message: str) -> None:
-        pass
-
-    def error(self, message: str) -> None:
-        pass
 
 
 @dataclass(frozen=True)
@@ -51,20 +39,27 @@ class TrackInfo:
     http_headers: dict[str, str]
 
 
-def extract(query: str, cookies_file: str) -> TrackInfo:
-    options = {
-        "format": "bestaudio/best",
-        "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
-        "logger": _SilentLogger(),
-        "default_search": DEFAULT_SEARCH,
-    }
+async def extract(yt_dlp_path: str, query: str, cookies_file: str) -> TrackInfo:
+    arguments = ["-J", "-f", "bestaudio/best", "--no-playlist", "--default-search", DEFAULT_SEARCH]
     if cookies_file:
-        options["cookiefile"] = cookies_file
+        arguments += ["--cookies", cookies_file]
+    # "--" so a listener's query starting with a dash is a search term rather than a flag.
+    arguments += ["--", query]
 
-    with yt_dlp.YoutubeDL(options) as ydl:
-        info = ydl.extract_info(query, download=False)
+    process = await asyncio.create_subprocess_exec(
+        yt_dlp_path, *arguments,
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        creationflags=CREATE_NO_WINDOW,
+    )
+    jobs.adopt(process)
+    stdout, stderr = await process.communicate()
+
+    if process.returncode != 0:
+        # yt-dlp's own "ERROR: [extractor] ..." line says why; the exit code is always 1.
+        detail = stderr.decode(errors="replace").strip().splitlines()
+        raise RuntimeError(detail[-1] if detail else f"yt-dlp exited {process.returncode}")
+
+    info = json.loads(stdout)
 
     entries = info.get("entries")
     if entries is not None:
@@ -91,8 +86,3 @@ def extract(query: str, cookies_file: str) -> TrackInfo:
         stream_url=info["url"],
         http_headers=info.get("http_headers") or {},
     )
-
-
-async def extract_async(query: str, cookies_file: str) -> TrackInfo:
-    """extract_info is a blocking network call, so this runs it off the loop."""
-    return await asyncio.to_thread(extract, query, cookies_file)

@@ -25,7 +25,7 @@ import aiohttp
 from .. import Receiver, Rejected, RequestTrack, TrackState
 from . import cache
 from .decoder import Decoder
-from .extractor import TrackInfo, extract_async
+from .extractor import TrackInfo, extract
 
 THUMBNAIL_TIMEOUT = 10
 
@@ -152,6 +152,9 @@ class YtDlpReceiver(Receiver):
         if self._deps.ffmpeg is None:
             self._hub.error("yt-dlp: ffmpeg is not available - check the Dependencies panel")
             return False
+        if self._deps.yt_dlp is None:
+            self._hub.error("yt-dlp.exe is not available - check the Dependencies panel")
+            return False
 
         async with self._gate:
             self._queue.append(query)
@@ -167,7 +170,7 @@ class YtDlpReceiver(Receiver):
             return None
 
         try:
-            info = await extract_async(query, self._settings.cookiesFile)
+            info = await extract(self._deps.yt_dlp, query, self._settings.cookiesFile)
         except Rejected:
             # No results, live, too long - a message already safe to show a listener, so it goes to
             # the public search response instead of being swallowed as an extraction failure.
@@ -239,7 +242,7 @@ class YtDlpReceiver(Receiver):
 
     async def _resolve_and_cache(self, query: str) -> _Cached:
         self._hub.info(f"yt-dlp: resolving '{query}'")
-        info = await extract_async(query, self._settings.cookiesFile)
+        info = await extract(self._deps.yt_dlp, query, self._settings.cookiesFile)
         data = await cache.download(self._deps.ffmpeg, info.stream_url, info.http_headers)
         return _Cached(info, data)
 

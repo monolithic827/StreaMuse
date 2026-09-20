@@ -63,6 +63,12 @@ is deliberate: the app build then neither waits on that job nor can ship a stale
 publish fixes Spotify for everyone already holding an exe. Nothing triggers that workflow on an
 ordinary push - run it by hand when the patch or the ref changes.
 
+**yt-dlp is downloaded too, and for the same reason**, straight from upstream's own
+`releases/latest/download/yt-dlp.exe` - no tag of ours, nothing to build. It is the only dependency
+whose *staleness* is a functional bug rather than a missed improvement, since its extractors break
+whenever YouTube changes, so bundling it or pinning a ref would guarantee the one failure mode that
+matters. See the yt-dlp section for what that costs.
+
 There is **no test project**. Verification is done by running the app and checking real behaviour.
 
 **Never launch the app as a background job from an agent or IDE shell.** Doing so once took the whole
@@ -363,15 +369,29 @@ panel still receives the version as a number: nothing validates it there.
   on the exe's own directory.
 
 **yt-dlp**
-- yt-dlp is a pip dependency, not a downloaded exe like ffmpeg and cloudflared - it has a Python API,
-  PyInstaller bundles it into the exe like any other import, and there is no separate binary for
-  `deps.py` to resolve. Only `sources/ytdlp/extractor.py` imports it; ffmpeg does the actual decode,
-  the same as everywhere else in this app.
+- **yt-dlp is a downloaded exe like the other three, not a pip dependency**, and tracks `latest`
+  rather than a pinned ref. It was a pip dependency, which froze its version into a release build -
+  the worst arrangement for the one library here that chases a moving target, since YouTube breaks
+  extractors regularly and upstream ships releases at that cadence. As a download, a fix reaches
+  everyone already holding an exe without a StreaMuse build, which is the same reason go-librespot
+  is not bundled. Only `sources/ytdlp/extractor.py` runs it, and only to extract; ffmpeg does the
+  actual decode, the same as everywhere else in this app.
+- **It costs a process per resolve, and the exe is a repackaged Python interpreter** (~18 MB) that
+  unpacks to temp on every run, so a resolve carries ~2 s of startup the in-process API did not.
+  Measured against a real search that already takes seconds of network, it is not dominant - time to
+  first audio went 4.4 s to 3.7 s across the change - but it is why nothing here should call
+  `extract()` speculatively.
+- `extract()` reads `yt-dlp.exe -J`, whose JSON is the same dict the Python API returned: a search
+  comes back as a `playlist` with `entries`, a direct URL as a `video` with the chosen format's
+  `url` and `http_headers` already merged in at the top level. Verified against both shapes. It
+  passes `--` before the query so a listener's search starting with a dash is a search term and not
+  a flag, and takes the *last* stderr line for its error, since yt-dlp prints warnings ahead of the
+  `ERROR:` line that says why.
 - `YtDlpReceiver` is not a receiver in the AirPlay/Spotify sense - nothing ever connects to it, so
   `start()` only records the sink and `load()` (called from `/api/source/load`) is what actually
   begins a track. `SourceManager` and `Receiver` both grew a `load()` alongside `control()` for this;
   every other source's default just returns `False`.
-- **A resolved stream URL is signed to the request that fetched it.** `extract_info`'s `http_headers`
+- **A resolved stream URL is signed to the request that fetched it.** The JSON's `http_headers`
   (User-Agent above all) have to travel with the URL to ffmpeg's `-headers`, or YouTube's and
   SoundCloud's CDNs answer 403 - verified end to end against both.
 - **`_fetch()`'s cover download catches `TimeoutError` alongside `aiohttp.ClientError`** - the
@@ -380,10 +400,10 @@ panel still receives the version as a number: nothing validates it there.
   calls this, the track is already marked playing and its decoder has not started yet, so an
   uncaught exception here would crash `load()` with the panel showing "Playing" and no audio ever
   actually starting. Reproduced live under a flaky connection.
-- yt-dlp's own error reporting prints straight to the console even with `quiet`/`no_warnings` set,
-  ahead of raising - a caller that already turns the same exception into `hub.error` would otherwise
-  show it twice, once outside the log. `extractor._SilentLogger` is the documented way to fully
-  silence it.
+- yt-dlp writes its stderr in the console codepage, not UTF-8, so an `ERROR:` line carrying a
+  typographic quote decodes to U+FFFD under `errors="replace"` ("Sign in to confirm you<?>re not a
+  bot"). Left alone deliberately: guessing the codepage would mangle the real UTF-8 that track
+  titles in those messages are written in, and `StateHub.log`'s print is already guarded.
 - **A refusal a listener may read is `sources.Rejected`, not any convenient exception.** The three
   deliberate ones (`no results`, live, too long) are raised in `extractor.py`, re-raised untouched by
   `search()` and turned into a 400 by `web/public.py`, so the type is the contract between them. It
@@ -627,6 +647,17 @@ age-restricted or private content, since verifying that needs a real account's e
 a real multi-second CDN stall specifically, since nothing here can inject one to order - the read-ahead
 fix is verified by what it measurably does (bank read-ahead) rather than by forcing the stall it is
 meant to absorb.
+
+**Its move from a pip dependency to a downloaded exe** is verified by the real thing, not just by
+imports: the pip package was uninstalled, `ensure_all` downloaded `yt-dlp.exe` from upstream's
+latest-release URL into `BIN_DIR` and reported it alongside the other three, and a full live run
+against real SoundCloud came back identical to the pip-API run before it - same tracks, same byte
+counts, prefetch, skip and clean stop. `-J` was checked against both JSON shapes (search and direct
+URL) for the fields `extract()` reads, and the three failure paths were driven for real: a 404 URL
+surfaces yt-dlp's own `ERROR:` line, an empty search raises `Rejected`, and a dash-leading query is
+searched for rather than parsed as a flag. Unlike `deps.GO_LIBRESPOT_URL`, this download URL is
+confirmed to exist - it is upstream's own, not one this repo has to publish. Not yet exercised: a
+release build with the dependency gone, though nothing in `streamuse.spec` named it.
 
 **yt-dlp song requests** are verified end to end against real YouTube: a bare-text request resolves
 and plays immediately when idle, a second request while the first is playing queues behind it
