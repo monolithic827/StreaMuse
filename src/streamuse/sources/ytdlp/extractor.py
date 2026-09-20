@@ -12,6 +12,8 @@ from dataclasses import dataclass
 
 import yt_dlp
 
+from .. import Rejected
+
 #: A bare query (not a URL) searches YouTube; "scsearch1:" prefixes a query to search SoundCloud
 #: instead, same as yt-dlp's own CLI.
 DEFAULT_SEARCH = "ytsearch1"
@@ -68,16 +70,16 @@ def extract(query: str, cookies_file: str) -> TrackInfo:
     if entries is not None:
         info = next(iter(entries), None)
         if info is None:
-            raise LookupError(f"no results for '{query}'")
+            raise Rejected(f"no results for '{query}'")
 
     # A live stream has no fixed length - ffmpeg would pull from an open-ended HLS manifest instead
     # of a normal file, which the queue's one-track-then-advance model isn't built for.
     if info.get("is_live"):
-        raise LookupError(f"'{info.get('title') or query}' is live, not a regular video")
+        raise Rejected(f"'{info.get('title') or query}' is live, not a regular video")
 
     duration = float(info.get("duration") or 0)
     if duration > MAX_DURATION_SECONDS:
-        raise LookupError(
+        raise Rejected(
             f"'{info.get('title') or query}' is over {MAX_DURATION_SECONDS // 60} minutes - too long to queue")
 
     return TrackInfo(

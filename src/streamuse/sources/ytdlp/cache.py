@@ -21,7 +21,14 @@ from .. import SAMPLE_RATE
 CREATE_NO_WINDOW = 0x08000000
 
 
-async def download(ffmpeg_path: str, stream_url: str, http_headers: dict[str, str]) -> bytes:
+async def _drain(stream: asyncio.StreamReader) -> bytearray:
+    buffer = bytearray()
+    while chunk := await stream.read(1 << 16):
+        buffer += chunk
+    return buffer
+
+
+async def download(ffmpeg_path: str, stream_url: str, http_headers: dict[str, str]) -> bytearray:
     arguments = [
         "-hide_banner", "-nostdin", "-loglevel", "level+warning",
         "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "4",
@@ -32,16 +39,18 @@ async def download(ffmpeg_path: str, stream_url: str, http_headers: dict[str, st
 
     process = await asyncio.create_subprocess_exec(
         ffmpeg_path, *arguments,
-        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         creationflags=CREATE_NO_WINDOW,
     )
     jobs.adopt(process)
 
     try:
-        # communicate() rather than a bare wait() + read: it drains stdout concurrently with the
-        # process running, which a plain read after wait() cannot do once the pipe's own OS buffer
-        # is smaller than a full track - ffmpeg would block writing long before it ever exits.
-        stdout, _ = await process.communicate()
+        # Both drained while the process runs, which a read after wait() cannot do - the pipe's OS
+        # buffer is far smaller than a track, so ffmpeg would block writing long before it exits.
+        # Into a bytearray rather than communicate()'s list of chunks joined at the end, which would
+        # briefly hold a whole track's PCM twice.
+        pcm, log = await asyncio.gather(_drain(process.stdout), _drain(process.stderr))
+        await process.wait()
     except asyncio.CancelledError:
         # A discarded prefetch (the queue was cleared, or stop() ran) - kill rather than let an
         # abandoned ffmpeg keep decoding into a pipe nobody will ever read.
@@ -51,5 +60,8 @@ async def download(ffmpeg_path: str, stream_url: str, http_headers: dict[str, st
         raise
 
     if process.returncode != 0:
-        raise RuntimeError(f"ffmpeg cache download exited {process.returncode}")
-    return stdout
+        # The last line is what actually says why - a CDN 403 from a stale signed URL looks nothing
+        # like a codec failure, and the exit code alone cannot tell them apart.
+        detail = log.decode(errors="replace").strip().splitlines()
+        raise RuntimeError(f"ffmpeg exited {process.returncode}: {detail[-1] if detail else 'no output'}")
+    return pcm

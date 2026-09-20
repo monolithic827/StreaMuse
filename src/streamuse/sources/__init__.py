@@ -63,6 +63,11 @@ class TrackState:
                           self.position, self.duration, artwork_version)
 
 
+class Rejected(Exception):
+    """A search refused on purpose, with a message already safe to show a listener - unlike an
+    extraction failure, which carries whatever the underlying library had to say."""
+
+
 @dataclass(frozen=True)
 class RequestTrack:
     """One resolved search result. The id is what comes back to enqueue it, and each receiver
@@ -116,11 +121,9 @@ class Receiver:
     async def control(self, command: str) -> bool:
         return False
 
-    async def load(self, query: str, title: str = "", artist: str = "", duration: float = 0.0) -> bool:
+    async def load(self, query: str) -> bool:
         """Overridden only by a source that accepts an on-demand URL or search query rather than
-        waiting for something else to connect. title/artist/duration are already known when the
-        caller picked this from a search result, and are only ever a display hint for a source that
-        queues rather than replaces what is already playing."""
+        waiting for something else to connect."""
         return False
 
     async def search(self, query: str) -> RequestTrack | None:
@@ -184,9 +187,9 @@ class SourceManager:
         receiver = self._active
         return await receiver.control(command) if receiver is not None else False
 
-    async def load(self, query: str, title: str = "", artist: str = "", duration: float = 0.0) -> bool:
+    async def load(self, query: str) -> bool:
         receiver = self._active
-        return await receiver.load(query, title, artist, duration) if receiver is not None else False
+        return await receiver.load(query) if receiver is not None else False
 
     @property
     def request_action(self) -> str:

@@ -384,6 +384,17 @@ panel still receives the version as a number: nothing validates it there.
   ahead of raising - a caller that already turns the same exception into `hub.error` would otherwise
   show it twice, once outside the log. `extractor._SilentLogger` is the documented way to fully
   silence it.
+- **A refusal a listener may read is `sources.Rejected`, not any convenient exception.** The three
+  deliberate ones (`no results`, live, too long) are raised in `extractor.py`, re-raised untouched by
+  `search()` and turned into a 400 by `web/public.py`, so the type is the contract between them. It
+  lives in `sources/__init__.py` rather than the yt-dlp package because the web layer consumes it.
+  It used to be `LookupError`, which also catches `KeyError` - so `info["url"]` missing reached a
+  listener as `{"error": "'url'"}` with nothing at all in the host's log.
+- **`cache.download` puts ffmpeg's last stderr line in the exception.** A stale signed URL comes back
+  as a CDN 403 and looks nothing like a codec failure, but the exit code cannot tell them apart -
+  measured, a bad URL now reports `Server returned 404 Not Found` where it used to report only
+  `exited 3419392776`. It drains stdout and stderr concurrently into `bytearray`s rather than calling
+  `communicate()`, which joins a chunk list at the end and so holds a whole track's PCM twice.
 - `cookiesFile` is one Netscape-format `cookies.txt` for both sites, a straight passthrough to
   yt-dlp's `cookiefile` option, which filters by domain on its own - there is no per-source cookie
   setting to keep in sync.
@@ -392,13 +403,27 @@ panel still receives the version as a number: nothing validates it there.
   only starts a decoder itself when the queue was empty - so "play" and "add to queue" are the same
   call, and which one it looks like depends only on whether something was already playing.
   `control("next")` and a natural end (the decoder's `on_finished`) both advance the same way: stop
-  (or notice it already stopped), pop the next `state.QueueItem`, resolve and play it. `self._gate`
+  (or notice it already stopped), pop the next query, resolve and play it. `self._gate`
   (an `asyncio.Lock`) serializes every path that can start or stop a decoder - `load()`, `control()`,
   `stop()`, and the advance a natural finish schedules - because a track ending on its own at the
   same moment as a manual "next" (or two quick loads) could otherwise each see the decoder as free
   and start one of their own. `_advance_locked()` assumes the caller already holds the gate (every
   internal caller does); `_advance()` is the gate-acquiring wrapper, used only by `on_finished`'s
   detached task, which is not already holding anything.
+- **The gate alone is not enough, because `_on_finished` clears `self._decoder` off the gate.** It
+  runs straight from the pacing thread's `call_soon_threadsafe` and only *schedules* the advance, so
+  a `load()` can take the gate in between, see no decoder and start the next track itself; the
+  scheduled advance then starts a *second* decoder over that live one - both pacing into the sink,
+  with the first no longer referenced by anything that could stop it. `_advance_locked` therefore
+  returns early when a decoder already exists. Verified by removing that line: the same sequence
+  really does leave two decoders running.
+- **`stop()` and `control("next")` cancel the in-flight resolve *before* asking for the gate.**
+  `_play` awaits `_resolve_and_cache` with the gate held, and `cache.download` gives ffmpeg
+  `-reconnect` with no overall deadline, so against a stalled CDN the gate would be held for as long
+  as ffmpeg kept retrying - hanging `SourceManager.select` and burning `app._shutdown`'s 10 s
+  timeout, the same failure shape as the `RtspServer.stop` one above. `_cancel_loading` is what
+  makes the wait bounded; `_play` treats its own task being cancelled as "nothing to play", since
+  the canceller is already queued on the gate behind it.
 - **`search()`/`enqueue()` (the public song-request path) reject anything URL-shaped that is not on
   an explicit `youtube.com`/`youtu.be`/`soundcloud.com` allowlist** - unlike Apple's and Spotify's
   `search()`, which always hit a fixed catalogue endpoint regardless of what a listener types,
@@ -411,6 +436,12 @@ panel still receives the version as a number: nothing validates it there.
   bare text, which only ever becomes a YouTube search and is always safe. `enqueue()` re-checks the
   same allowlist independently of `search()`, since the id a listener POSTs back is never assumed to
   be one `search()` actually returned.
+  **Two things make "URL-shaped" wider than it looks, and both were live bypasses.** The scheme is
+  optional: `GenericIE._real_extract` promotes a bare `//host/path` to http(s) *before* it reaches
+  `default_search`, so that is fetched, not searched for - hence the `//` rather than the scheme is
+  what `_URL` actually keys on. And the string must be stripped *before* the check as well as after,
+  because `urlsplit` drops leading whitespace itself, so `" https://..."` reads as bare text here
+  and as a URL to yt-dlp. Both were confirmed by watching a real yt-dlp open the socket.
 - **Every track is fully resolved and decoded to raw PCM in memory (`cache.py`) before it plays**,
   network fetch, resample and decode all in one ffmpeg pass - not decoded live off the network, and
   not even decoded lazily at playback time. A CDN reset during that one pass just costs download
@@ -464,6 +495,14 @@ panel still receives the version as a number: nothing validates it there.
   was tried first and rejected - reversing which direction should speed up vs. slow down being
   genuinely easy to get backwards is why this is called out - since a much wider allowance solves the
   same problem without needing to precisely rate-match anything at all.
+- **That wide allowance has to be given back on a skip.** Banked lead is harmless while a track
+  plays, but the moment "next" is pressed it is the *skipped* track's audio, and `AudioPacer` has no
+  partial flush - `reset()` belongs to the pipeline, and the receiver only ever holds a push
+  callable, so reaching in to clear it would mean changing the sink contract for all three sources.
+  Instead `_stop_decoder` arms `PACER_SKIP_LATENCY_MS`, and the next track's first chunk is pushed
+  with that tight cap so `push()` sheds the stale lead as the overrun it now is; `_deliver` reverts
+  to the wide cap immediately after. A natural end deliberately does not arm it - there the lead is
+  the tail of the track that just played, and dropping it would clip the ending.
 
 **Serialization and background tasks**
 - Never put a non-finite `float` into anything serialized. `state.dumps` passes `allow_nan=False`, so
@@ -594,10 +633,22 @@ and plays immediately when idle, a second request while the first is playing que
 without interrupting, and the request-side URL allowlist is verified both ways - allowed hosts
 resolve normally, and a disallowed scheme (`ftp://169.254.169.254/`, chosen because it is a real
 attempt by yt-dlp's own generic extractor, not merely a syntax rejection) is refused by both
-`search()` and `enqueue()` independently. Not yet exercised: the same request flow through the
-actual public HTTP endpoint end to end (verified so far at the receiver level, not through
+`search()` and `enqueue()` independently. The two wider bypasses of that allowlist - a bare
+`//host/path` and a leading-whitespace URL - are verified the same way, and additionally by driving a
+real yt-dlp with each: before the fix it opened the socket for both, after it neither resolves nor
+reaches the network from `search()` or `enqueue()`. Not yet exercised: the same request flow through
+the actual public HTTP endpoint end to end (verified so far at the receiver level, not through
 `web/public.py`'s cooldowns and JSON handling), and SoundCloud specifically for this path (the
 existing yt-dlp verification already covers SoundCloud for direct panel playback).
+
+**The queue's concurrency fixes** are verified against real SoundCloud with real ffmpeg, driving
+`YtDlpReceiver` directly: a track resolves and paces at 1x (6.3s of audio delivered in 6s of wall
+clock), a second queues and prefetches behind it, `control("next")` picks it up with the skip cap
+armed and reverting after one chunk, a failed resolve advances to the next item instead of stalling
+the queue, and `stop()` leaves `_decoder`/`_next`/`_loading`/`_queue` all empty. The two-decoder race
+is verified by removing the guard and watching the same sequence really start a third decoder over a
+live one; `stop()` against a stalled resolve returns immediately rather than waiting on the gate.
+Both were driven with the network stubbed, since neither race needs a real CDN to reproduce.
 
 **yt-dlp's cache-before-play path** is verified end to end against real YouTube, driving `YtDlpReceiver`
 directly rather than through the panel: the first track of a session resolves and fully decodes with

@@ -22,8 +22,7 @@ from dataclasses import dataclass
 
 import aiohttp
 
-from ...state import QueueItem
-from .. import Receiver, RequestTrack, TrackState
+from .. import Receiver, Rejected, RequestTrack, TrackState
 from . import cache
 from .decoder import Decoder
 from .extractor import TrackInfo, extract_async
@@ -38,13 +37,21 @@ THUMBNAIL_TIMEOUT = 10
 #: nothing worth counting in memory next to the whole track already held.
 PACER_MAX_LATENCY_MS = 30_000
 
+#: What the first chunk after a deliberate stop is pushed with instead. That banked lead is harmless
+#: while a track plays, but on a skip it is the *skipped* track's audio, and the pacer has no partial
+#: flush - so "next" would not be heard until it drained, with the new track's metadata already burned
+#: into the video. Pushing once at a tight cap makes push() shed it as the overrun it now is.
+PACER_SKIP_LATENCY_MS = 200
+
 #: A public request must not become an arbitrary outbound fetch: yt-dlp's generic extractor will
 #: attempt any scheme urllib understands, not just http(s) - verified against a real yt-dlp install,
 #: ftp:// is actually attempted (it only fails here for want of a reachable FTP server), so
 #: "not http(s)" is not the same thing as "safe". Anything with a scheme prefix at all is URL-shaped
 #: and confined to the two sites this source actually serves; only genuinely bare text is safe, since
-#: that only ever becomes a YouTube search.
-_URL = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*://")
+#: that only ever becomes a YouTube search. The scheme is optional in this pattern because a bare
+#: "//host/path" is not bare text either - GenericIE._real_extract promotes it to http(s) before it
+#: ever looks at default_search, so it is fetched rather than searched for.
+_URL = re.compile(r"^(?:[a-zA-Z][a-zA-Z0-9+.-]*:)?//")
 _ALLOWED_HOST = re.compile(
     r"^https?://(www\.|m\.|music\.)?(youtube\.com|youtu\.be|soundcloud\.com|on\.soundcloud\.com)/",
     re.IGNORECASE,
@@ -58,7 +65,7 @@ def _is_allowed(query: str) -> bool:
 @dataclass(frozen=True)
 class _Cached:
     info: TrackInfo
-    data: bytes
+    data: bytearray
 
 
 class YtDlpReceiver(Receiver):
@@ -77,7 +84,7 @@ class YtDlpReceiver(Receiver):
         self._sink = None
         self._decoder: Decoder | None = None
         self._title = ""
-        self._queue: list[QueueItem] = []
+        self._queue: list[str] = []
         #: Serializes stop/advance/play so a track ending naturally at the same moment as a manual
         #: "next" (or two quick loads) can't both decide the decoder is free and start one each.
         self._gate = asyncio.Lock()
@@ -85,6 +92,12 @@ class YtDlpReceiver(Receiver):
         #: `self._queue[0]` and always consumed into the current track on the next advance, so its
         #: identity never needs tracking separately from the queue's own.
         self._next: asyncio.Task | None = None
+        #: The resolve the current track is waiting on, held only so stop() and "next" can cancel it
+        #: without first waiting for the gate it runs under. See _cancel_loading.
+        self._loading: asyncio.Task | None = None
+        #: Kept so the advance a natural finish schedules cannot be collected while it runs.
+        self._advancing: asyncio.Task | None = None
+        self._latency_ms = PACER_MAX_LATENCY_MS
 
     @property
     def available(self) -> bool:
@@ -112,6 +125,7 @@ class YtDlpReceiver(Receiver):
         self._sink = sink
 
     async def stop(self) -> None:
+        self._cancel_loading()
         async with self._gate:
             await self._stop_decoder()
             await self._discard_next_locked()
@@ -122,13 +136,14 @@ class YtDlpReceiver(Receiver):
         if command == "playpause":
             return await self._toggle()
         if command == "next":
+            self._cancel_loading()
             async with self._gate:
                 await self._stop_decoder()
                 await self._advance_locked()
             return True
         return False
 
-    async def load(self, query: str, title: str = "", artist: str = "", duration: float = 0.0) -> bool:
+    async def load(self, query: str) -> bool:
         """Queues the query behind whatever is already playing, or plays it immediately if nothing
         is - the only distinction between "play" and "add to queue" is whether the queue was empty
         when this was called."""
@@ -139,7 +154,7 @@ class YtDlpReceiver(Receiver):
             return False
 
         async with self._gate:
-            self._queue.append(QueueItem(query, title, artist, duration))
+            self._queue.append(query)
             if self._decoder is None:
                 await self._advance_locked()
             else:
@@ -153,9 +168,9 @@ class YtDlpReceiver(Receiver):
 
         try:
             info = await extract_async(query, self._settings.cookiesFile)
-        except LookupError:
-            # A deliberate rejection with a message already safe to show a listener (no results,
-            # live, too long) - let it reach the public search response instead of being swallowed.
+        except Rejected:
+            # No results, live, too long - a message already safe to show a listener, so it goes to
+            # the public search response instead of being swallowed as an extraction failure.
             raise
         except Exception as exc:
             self._hub.warn(f"yt-dlp: request search for '{query}' failed - {exc}")
@@ -165,6 +180,9 @@ class YtDlpReceiver(Receiver):
             id=info.webpage_url, title=info.title, artist=info.artist, album="", artUrl=info.thumbnail_url)
 
     async def enqueue(self, track_id: str) -> bool:
+        # Stripped before the check as well as after it: urlsplit drops leading whitespace of its
+        # own, so " https://..." reaches yt-dlp as a URL while an unstripped check reads it as text.
+        track_id = track_id.strip()
         if not track_id or not _is_allowed(track_id):
             return False
         return await self.load(track_id)
@@ -172,18 +190,33 @@ class YtDlpReceiver(Receiver):
     async def _advance(self) -> None:
         """The gate-acquiring entry point - only `_on_finished`'s detached task calls this one, since
         every other caller already holds the gate when it wants the next queued item to start."""
-        async with self._gate:
-            await self._advance_locked()
+        try:
+            async with self._gate:
+                await self._advance_locked()
+        except Exception as exc:
+            # Detached, so an escaping exception would stop the queue advancing with nothing said.
+            self._hub.error(f"yt-dlp: could not start the next track - {exc}")
 
     async def _advance_locked(self) -> None:
         """Plays the next queued item, if any - called once at start and again every time a track
         ends, whether it finished on its own or was skipped. Assumes the gate is already held."""
-        if not self._queue:
+        # _on_finished clears the decoder off the gate, so a load() can get in and start the next
+        # track before the advance it scheduled runs. Without this the advance starts a second
+        # decoder over a live one: both pace into the sink, and the first is no longer referenced
+        # by anything that could stop it.
+        if self._decoder is not None or not self._queue:
             return
-        item = self._queue.pop(0)
+        query = self._queue.pop(0)
         task, self._next = self._next, None
-        await self._play(item, task)
+        await self._play(query, task)
         self._ensure_next_locked()
+
+    def _cancel_loading(self) -> None:
+        """A resolve-and-cache is awaited with the gate held, and ffmpeg's -reconnect gives it no
+        deadline of its own, so against a stalled CDN stop() and "next" would otherwise wait on the
+        gate for as long as it kept retrying - long enough for app._shutdown to time out."""
+        if self._loading is not None:
+            self._loading.cancel()
 
     def _ensure_next_locked(self) -> None:
         """Starts caching the new queue head, if there is one and it is not already being cached -
@@ -204,28 +237,30 @@ class YtDlpReceiver(Receiver):
         # do with the result either way - a `_Cached` here is just bytes with no file to clean up.
         await asyncio.gather(task, return_exceptions=True)
 
-    async def _resolve_and_cache(self, item: QueueItem) -> _Cached:
-        self._hub.info(f"yt-dlp: resolving '{item.query}'")
-        info = await extract_async(item.query, self._settings.cookiesFile)
+    async def _resolve_and_cache(self, query: str) -> _Cached:
+        self._hub.info(f"yt-dlp: resolving '{query}'")
+        info = await extract_async(query, self._settings.cookiesFile)
         data = await cache.download(self._deps.ffmpeg, info.stream_url, info.http_headers)
         return _Cached(info, data)
 
-    async def _play(self, item: QueueItem, task: asyncio.Task | None) -> None:
-        # Shows what a search result already told us immediately, in case resolving and caching is
-        # slow - a pasted link has no title yet and stays blank until it resolves below.
-        if item.title:
-            self._title = item.title
-            self._track.set_text(item.title, item.artist, "")
-            self._track.set_position(0, item.duration)
-            self._track.set_playing(True)
-
+    async def _play(self, query: str, task: asyncio.Task | None) -> None:
         if task is None:
-            task = asyncio.create_task(self._resolve_and_cache(item))
+            task = asyncio.create_task(self._resolve_and_cache(query))
 
+        self._loading = task
         try:
             cached = await task
+        except asyncio.CancelledError:
+            # _cancel_loading, so stop() or "next" is already waiting on the gate this holds -
+            # nothing to play and nothing to report.
+            return
         except Exception as exc:
-            self._hub.error(f"yt-dlp: could not resolve '{item.query}' - {exc}")
+            self._hub.error(f"yt-dlp: could not resolve '{query}' - {exc}")
+            cached = None
+        finally:
+            self._loading = None
+
+        if cached is None:
             await self._advance_locked()
             return
 
@@ -259,20 +294,22 @@ class YtDlpReceiver(Receiver):
             # notices _stopping, not something worth threading through to_thread for a deliberate
             # stop rather than steady playback.
             decoder.stop()
+            self._latency_ms = PACER_SKIP_LATENCY_MS
         self._track.clear()
         self._title = ""
 
     def _on_finished(self) -> None:
-        """The decoder calls this itself once ffmpeg's stdout closes - never on a deliberate stop(),
-        where the caller already owns clearing the track. Runs on the same loop the decoder's own
-        pump task does, so scheduling the next track is safe to do straight from here."""
+        """The decoder calls this itself once its PCM runs out - never on a deliberate stop(), where
+        the caller already owns clearing the track. Runs on the loop, since the pacing thread hands
+        it over with call_soon_threadsafe, so scheduling the next track from here is safe."""
         self._decoder = None
         self._track.set_playing(False)
-        asyncio.create_task(self._advance())
+        self._advancing = asyncio.create_task(self._advance())
 
     def _deliver(self, pcm: bytes) -> None:
         if self._sink is not None:
-            self._sink(pcm, PACER_MAX_LATENCY_MS)
+            self._sink(pcm, self._latency_ms)
+            self._latency_ms = PACER_MAX_LATENCY_MS
 
 
 async def _fetch(url: str) -> bytes | None:

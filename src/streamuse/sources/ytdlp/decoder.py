@@ -40,7 +40,7 @@ class Decoder:
         #: fires via call_soon_threadsafe, so it runs on the loop no matter which thread noticed.
         self.on_finished = None
 
-    def start(self, pcm: bytes, on_pcm) -> None:
+    def start(self, pcm: bytearray, on_pcm) -> None:
         self._thread = threading.Thread(
             target=self._pace, args=(pcm, on_pcm), name="ytdlp-pace", daemon=True)
         self._thread.start()
@@ -59,7 +59,7 @@ class Decoder:
             self._thread.join(timeout=3)
         self._thread = None
 
-    def _pace(self, pcm: bytes, on_pcm) -> None:
+    def _pace(self, pcm: bytearray, on_pcm) -> None:
         deadline = time.monotonic()
         pos = 0
 
