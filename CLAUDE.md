@@ -498,23 +498,16 @@ panel still receives the version as a number: nothing validates it there.
   zero drift over a full track. Both changes are kept anyway as independently-justified
   simplifications (matching `PipeReader`'s own established pattern, and removing a live process from
   the timing-critical path), not as the actual fix.
-- **The actual fix was recognizing `AudioPacer`'s 600ms shed cap does not apply to this source the
-  way it does to AirPlay's or Spotify's live, real-time-only feeds.** That cap bounds latency for a
-  source with nothing to buffer ahead of; yt-dlp's track is already fully decoded before playback
-  starts, and each track resets its own pacing reference (a new `Decoder` per track), so whatever
-  small, real rate mismatch exists between this decoder's pacing and `AudioPacer`'s own drain rate -
-  measured live as a steady ~25ms/s climb, cause never fully identified - is bounded by that one
-  track's length rather than compounding across a session. `AudioPacer.push()` now takes an optional
-  `max_latency_ms` override (default unchanged at 600ms for AirPlay and Spotify);
-  `receiver.PACER_MAX_LATENCY_MS` gives yt-dlp 30 seconds instead, which a few seconds of PCM costs
-  nothing to hold next to the whole track already in memory. Verified against the real `AudioPacer`
-  class (not a hand-rolled stand-in - an earlier simulation gave misleading results because its own
-  drain-loop timing did not match the real one closely enough to trust) over a full real track:
-  `dropped_frames` stayed at zero throughout, where the same track reliably shed under the old 600ms
-  cap. A closed-loop correction (trimming `Decoder`'s own sleep against the observed buffer trend)
-  was tried first and rejected - reversing which direction should speed up vs. slow down being
-  genuinely easy to get backwards is why this is called out - since a much wider allowance solves the
-  same problem without needing to precisely rate-match anything at all.
+- **The shedding was the chunk size.** `Decoder` pushed 16384-frame chunks (372 ms) with a 200 ms
+  lead, onto the 200 ms `AudioPacer` holds in reserve - a peak near 572 ms against the 600 ms shed
+  cap, so ordinary timer jitter tipped it over. Spotify's pipe reads are far smaller, which is why
+  only this source shed. `CHUNK_BYTES` is 2048 frames (46 ms) now; keep it small against that cap.
+  Measured with the real `AudioPacer`, `Clock` and `Decoder` over a 20 s track: 372 ms chunks peak at
+  600 ms and shed up to 0.9 s, 46 ms chunks peak at 280 ms and shed nothing.
+  `AudioPacer.push()`'s `max_latency_ms` override and `receiver.PACER_MAX_LATENCY_MS` (30 s) are the
+  earlier fix, from before the cause was known - a cap that wide absorbs the overshoot instead of
+  avoiding it, and in the same simulation the buffer holds at about 600 ms under it rather than
+  climbing. Both are probably redundant now and are kept only until a live run says so.
 - **That wide allowance has to be given back on a skip.** Banked lead is harmless while a track
   plays, but the moment "next" is pressed it is the *skipped* track's audio, and `AudioPacer` has no
   partial flush - `reset()` belongs to the pipeline, and the receiver only ever holds a push
@@ -699,22 +692,10 @@ endpoint) rather than the receiver driven directly, and the antivirus diagnosis 
 era was never confirmed against Defender's own logs, only inferred from ffmpeg's own abnormal exit
 codes and slow process kills - now moot for this path either way, since nothing here touches disk.
 
-**The "audio buffer overran" shedding is fixed, though its root cause was never pinned down.** It
-survived the in-memory rewrite, moving `Decoder` to its own thread, and a closed-loop correction that
-trimmed the decoder's own pacing against the observed downstream buffer trend - none of which turned
-out to be the actual mechanism. Ruled out directly rather than just reasoned about: a loop stall
-(`/api/state` polled every 150ms during an actively shedding session came back in 0-2ms throughout);
-general CPU/memory contention (sampled live during shedding, both stayed low, neither `python` nor
-`ffmpeg` nor antivirus among the top consumers); the shared pipeline itself (Spotify, on the exact
-same `AudioPacer`/`Clock`/encoder on the same machine, plays cleanly - this was always specific to
-the yt-dlp path); resample drift (ffmpeg converting YouTube's 48kHz Opus to the pipeline's fixed
-44100Hz checked against a real track's precise source duration, clean - only the ordinary one-time
-Opus priming-sample trim, nothing accumulating); and the read/pace math itself (an isolated test of
-`Decoder`'s exact loop against a real track showed zero drift over its full real-time duration). What
-actually made the shedding stop is `AudioPacer.push()`'s `max_latency_ms` override (see the
-"Every track is fully resolved..." bullet above) - a small, real rate mismatch clearly exists between
-this decoder's pacing and `AudioPacer`'s drain rate (measured live as a steady ~25ms/s climb toward
-the old 600ms cap), but since yt-dlp's buffer is now sized to absorb tens of seconds of that per
-track rather than 600ms, whatever the mismatch's source is no longer needs to be found. Verified
-against the real `AudioPacer` class over a full real track: `dropped_frames` at zero throughout,
-where the same exact track reliably shed under the old cap.
+**The "audio buffer overran" shedding has its root cause**: 372 ms chunks left 28 ms of headroom
+under the 600 ms cap - see the chunk-size bullet in the yt-dlp section. Reproduced and fixed in a
+simulation driving the real `AudioPacer`, `Clock` and `Decoder`, not yet re-checked in a live
+stream; the 30 s cap and the skip cap that predate the finding are still in place for that reason.
+What was ruled out on the way stays ruled out: a loop stall, CPU or memory contention, the shared
+pipeline (Spotify plays cleanly through the same pacer), resample drift, and the read/pace math. The
+"~25ms/s climb" this file used to record did not reproduce - the buffer holds steady.
