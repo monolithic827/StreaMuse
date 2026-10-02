@@ -85,8 +85,8 @@ class Receiver:
 
     source = ""
 
-    #: What enqueue does to the sender: "queue" plays it after the current track, "play" starts it
-    #: now. Empty when the receiver cannot take requests at all.
+    #: What enqueue does with a request: "queue" plays it after the current track, "ask" parks it
+    #: for the host to open. Empty when the receiver cannot take requests at all.
     request_action = ""
 
     @property

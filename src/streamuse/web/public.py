@@ -240,7 +240,7 @@ def _serve_now(request: web.Request, hub, settings, sources) -> web.Response:
             # not be the version the host sent.
             "artworkVersion": str(now.artworkVersion),
             "live": True,
-            # "queue", "play" or "" - what the button will do, so the page can say which. The page
+            # "queue", "ask" or "" - what the button will do, so the page can say which. The page
             # supplies the wording; this is only ever one of the three.
             "requests": sources.request_action if settings.songRequests else "",
         }
