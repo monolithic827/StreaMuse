@@ -9,7 +9,9 @@ used (User-Agent above all) have to travel with it or the CDN answers 403 to ffm
 
 import asyncio
 import json
+import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 
 from ... import jobs
@@ -40,13 +42,21 @@ class TrackInfo:
 
 
 async def extract(yt_dlp_path: str, query: str, cookies_file: str) -> TrackInfo:
+    if not cookies_file:
+        return await _extract(yt_dlp_path, query, [])
+
+    # yt-dlp writes its cookie jar back to the file it was given as it exits, failed runs included.
+    # Handed the host's own file, every resolve would rewrite it - a prefetch and a listener's
+    # search at the same moment - so each run gets a copy to write to instead.
+    with tempfile.TemporaryDirectory(prefix="streamuse-", ignore_cleanup_errors=True) as scratch:
+        return await _extract(yt_dlp_path, query, ["--cookies", shutil.copy(cookies_file, scratch)])
+
+
+async def _extract(yt_dlp_path: str, query: str, cookies: list[str]) -> TrackInfo:
     # Only the first entry is ever used, and without --playlist-items every one is fully resolved.
-    arguments = ["-J", "-f", "bestaudio/best", "--no-playlist", "--playlist-items", "1",
-                 "--default-search", DEFAULT_SEARCH]
-    if cookies_file:
-        arguments += ["--cookies", cookies_file]
     # "--" so a listener's query starting with a dash is a search term rather than a flag.
-    arguments += ["--", query]
+    arguments = ["-J", "-f", "bestaudio/best", "--no-playlist", "--playlist-items", "1",
+                 "--default-search", DEFAULT_SEARCH, *cookies, "--", query]
 
     process = await asyncio.create_subprocess_exec(
         yt_dlp_path, *arguments,
