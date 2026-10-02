@@ -21,9 +21,10 @@ ZEROCONF_PORT = 5354
 
 def write_config(directory, device_name: str, api_port: int) -> None:
     directory.mkdir(parents=True, exist_ok=True)
-    # Single quotes so YAML keeps the pipe path's backslashes verbatim.
+    # Single quotes so YAML keeps the pipe path's backslashes verbatim; inside them a quote is
+    # written doubled, or a name like "Kendra's PC" ends the scalar early.
     config = f"""log_level: info
-device_name: '{device_name}'
+device_name: '{device_name.replace("'", "''")}'
 device_type: computer
 zeroconf_enabled: true
 zeroconf_port: {ZEROCONF_PORT}
