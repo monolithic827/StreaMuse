@@ -318,7 +318,10 @@ panel still receives the version as a number: nothing validates it there.
   nothing to start until the download finishes.
 - The downloaded archive carries the exe **and** its DLLs together, so a machine gets a working set
   or none at all. Do not split them into two downloads again: the pair that is half-installed is the
-  one that fails in Windows' own "DLL was not found" dialog, which never names go-librespot.
+  one that fails in Windows' own "DLL was not found" dialog, which never names go-librespot. The
+  same goes for unpacking it: `resolve()` trusts whatever sits at the final name, so the set is
+  staged in `go-librespot.part` and moved in with the exe last, and ffmpeg is written to a `.part`
+  and renamed. Extracted in place, a failure half-way left a binary that was used from then on.
 - The named pipe instance must exist **before** the daemon starts, because go-librespot is the client
   and its open fails outright when nothing is listening.
 - go-librespot closes the pipe on stop and on playback moving to another device, and reopens it on the

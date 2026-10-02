@@ -10,6 +10,7 @@ build to reach anyone."""
 
 import asyncio
 import os
+import shutil
 import subprocess
 import tempfile
 import zipfile
@@ -86,14 +87,11 @@ class DependencyManager:
 
         try:
             await self._download(FFMPEG_URL, archive, "ffmpeg")
-            with zipfile.ZipFile(archive) as zf:
-                # The archive nests everything under ffmpeg-master-latest-win64-gpl/bin/.
-                name = next(
-                    (n for n in zf.namelist() if n.lower().endswith("bin/ffmpeg.exe")), None)
-                if name is None:
-                    self._hub.error("ffmpeg archive did not contain bin/ffmpeg.exe")
-                    return None
-                target.write_bytes(zf.read(name))
+            # Off the loop: it is seconds of unpacking, and the receiver that was started before
+            # the downloads is already running on it.
+            if not await asyncio.to_thread(_unpack_ffmpeg, archive, target):
+                self._hub.error("ffmpeg archive did not contain bin/ffmpeg.exe")
+                return None
         except Exception as exc:
             self._hub.error(f"ffmpeg download failed: {exc}")
             return None
@@ -114,8 +112,7 @@ class DependencyManager:
 
         try:
             await self._download(GO_LIBRESPOT_URL, archive, "go-librespot")
-            with zipfile.ZipFile(archive) as zf:
-                zf.extractall(paths.BIN_DIR)
+            await asyncio.to_thread(_unpack_go_librespot, archive)
         except Exception as exc:
             self._hub.error(f"go-librespot download failed: {exc}")
             return
@@ -207,6 +204,39 @@ class DependencyManager:
             partial.replace(destination)
         finally:
             partial.unlink(missing_ok=True)
+
+
+def _unpack_ffmpeg(archive: Path, target: Path) -> bool:
+    with zipfile.ZipFile(archive) as zf:
+        # The archive nests everything under ffmpeg-master-latest-win64-gpl/bin/.
+        name = next((n for n in zf.namelist() if n.lower().endswith("bin/ffmpeg.exe")), None)
+        if name is None:
+            return False
+
+        # resolve() trusts whatever sits at the final name, so it only appears there whole.
+        partial = target.with_suffix(target.suffix + ".part")
+        try:
+            with zf.open(name) as source, partial.open("wb") as handle:
+                shutil.copyfileobj(source, handle)
+            partial.replace(target)
+        finally:
+            partial.unlink(missing_ok=True)
+    return True
+
+
+def _unpack_go_librespot(archive: Path) -> None:
+    """Unpacked beside the bin folder's own files and moved in with the exe last: resolve() reads
+    the exe's presence as the whole set being there, and an extraction that failed part-way left
+    it in place with DLLs missing or cut short."""
+    staging = paths.BIN_DIR / "go-librespot.part"
+    shutil.rmtree(staging, ignore_errors=True)
+    try:
+        with zipfile.ZipFile(archive) as zf:
+            zf.extractall(staging)
+        for file in sorted(staging.iterdir(), key=lambda f: f.name.lower() == "go-librespot.exe"):
+            file.replace(paths.BIN_DIR / file.name)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 def resolve(exe: str) -> str | None:
