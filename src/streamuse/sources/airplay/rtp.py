@@ -183,10 +183,16 @@ class RtpSession:
             return
 
         self.last_packet_at = time.monotonic()
-        self._buffer[timestamp] = pcm
 
         if self._next_ts is None or marker:
             self._start_cursor(timestamp)
+        elif _before(timestamp, self._next_ts):
+            # The cursor already passed this slot, so nothing would ever release it - and a buffer
+            # that is never empty again reads as a hole rather than a sender that stopped, which
+            # is silence emitted forever instead of a parked cursor.
+            return
+
+        self._buffer[timestamp] = pcm
 
     def _note_stranger(self, address) -> None:
         """Said once per address: dropping these is right when it really is a second device, but if

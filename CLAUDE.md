@@ -241,7 +241,9 @@ panel still receives the version as a number: nothing validates it there.
 - When a hole in the sequence has nothing behind it, the sender stopped rather than dropped a packet:
   park the cursor and resume wherever it speaks again. Filling silence there instead would emit
   forever. A hole with later packets waiting is a real loss and does get silence, so the timeline
-  stays honest.
+  stays honest. "Nothing behind it" is an empty buffer, so a packet that arrives after the cursor
+  passed its slot is dropped rather than stored: nothing would ever release it, and one stale entry
+  makes every later stop look like a hole.
 - ffmpeg's ALAC decoder needs the **36-byte `alac` atom**, not the bare 24-byte body the SDP fmtp
   describes. `alac.magic_cookie` rebuilds it, and its output is byte-identical to what ffmpeg writes
   for its own ALAC files - which is how it was verified.
