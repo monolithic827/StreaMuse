@@ -52,8 +52,8 @@ async def _get(url: str, params: dict, hub) -> dict | None:
                     return None
                 # The API answers as text/javascript, so aiohttp will not decode it unasked.
                 return await reply.json(content_type=None)
-    except aiohttp.ClientError as exc:
-        hub.warn(f"apple: could not reach the iTunes catalogue ({exc})")
+    except (aiohttp.ClientError, TimeoutError) as exc:
+        hub.warn(f"apple: could not reach the iTunes catalogue ({str(exc) or 'timed out'})")
         return None
 
 

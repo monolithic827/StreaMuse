@@ -158,8 +158,11 @@ class SpotifyReceiver(Receiver):
         # Dropped rather than kept: the new title with the previous album beside it would be worse
         # than a moment with no cover at all.
         self._artwork.set(None)
-        if self._api is not None:
-            self._artwork.set(await self._api.fetch_cover(url))
+        cover = await self._api.fetch_cover(url) if self._api is not None else None
+        if cover is None:
+            # Forgotten, or the early return above would keep this track coverless for good.
+            self._cover_url = ""
+        self._artwork.set(cover)
 
     def _deliver(self, pcm: bytes) -> None:
         if self._sink is not None:

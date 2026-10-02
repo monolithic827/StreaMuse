@@ -62,9 +62,9 @@ class DacpClient:
                     if reply.status in (200, 204):
                         return True
                     self._hub.warn(f"airplay: remote command refused ({reply.status})")
-        except aiohttp.ClientError as exc:
+        except (aiohttp.ClientError, TimeoutError) as exc:
             # The port moves between sessions; a refusal means the cached one is stale.
             self._endpoint = None
-            self._hub.warn(f"airplay: remote command failed ({exc})")
+            self._hub.warn(f"airplay: remote command failed ({str(exc) or 'timed out'})")
 
         return False

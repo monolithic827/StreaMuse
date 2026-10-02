@@ -525,6 +525,11 @@ panel still receives the version as a number: nothing validates it there.
   `call_soon_threadsafe` and each client has its own queue - a mutation never blocks on a slow socket.
 - Detached tasks must log their exceptions. Anything swallowed here is invisible and presents as a
   frozen UI.
+- **An `except aiohttp.ClientError` around a request needs `TimeoutError` beside it.** The session's
+  own timeout raises the builtin, which is not a `ClientError`, so a slow server escapes the handler
+  that a refused connection lands in - measured against a server that accepts and never answers, in
+  the iTunes lookup (a 500 for the listener), DACP, and every go-librespot call, where a slow cover
+  fetch took the event socket down with it. It also stringifies to `""`, hence `timed out`.
 - Logging must never throw. The Windows console cannot encode every track title, so the print is
   guarded; prefer plain quotes over typographic ones in log and status strings.
 - Nothing in `app._shutdown` may throw. It runs after the window has gone and there is no handler

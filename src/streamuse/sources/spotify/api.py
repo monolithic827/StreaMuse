@@ -27,6 +27,9 @@ SEARCH_URL = "https://api.spotify.com/v1/search"
 #: fallback for when that header is missing or unparseable.
 DEFAULT_RETRY_AFTER = 5.0
 
+#: The session's own timeout raises TimeoutError, which is not a ClientError.
+UNREACHABLE = (aiohttp.ClientError, TimeoutError)
+
 
 class LibrespotApi:
     def __init__(self, port: int, hub, on_event) -> None:
@@ -60,8 +63,8 @@ class LibrespotApi:
         try:
             async with self._session.post(f"{self._base}/player/{path}") as reply:
                 return reply.status < 400
-        except aiohttp.ClientError as exc:
-            self._hub.warn(f"spotify: command failed ({exc})")
+        except UNREACHABLE as exc:
+            self._hub.warn(f"spotify: command failed ({_why(exc)})")
             return False
 
     async def add_to_queue(self, uri: str) -> bool:
@@ -72,8 +75,8 @@ class LibrespotApi:
                 f"{self._base}/player/add_to_queue", json={"uri": uri}
             ) as reply:
                 return reply.status < 400
-        except aiohttp.ClientError as exc:
-            self._hub.warn(f"spotify: could not queue the track ({exc})")
+        except UNREACHABLE as exc:
+            self._hub.warn(f"spotify: could not queue the track ({_why(exc)})")
             return False
 
     async def search(self, query: str) -> RequestTrack | None:
@@ -105,8 +108,8 @@ class LibrespotApi:
                         self._hub.warn(f"spotify: search failed ({reply.status})")
                         return None
                     return _first_track(await reply.json())
-            except aiohttp.ClientError as exc:
-                self._hub.warn(f"spotify: search failed ({exc})")
+            except UNREACHABLE as exc:
+                self._hub.warn(f"spotify: search failed ({_why(exc)})")
                 return None
 
         return None
@@ -125,8 +128,8 @@ class LibrespotApi:
                 if reply.status != 200:
                     return None
                 self._token = (await reply.json()).get("token") or None
-        except aiohttp.ClientError as exc:
-            self._hub.warn(f"spotify: could not get an access token ({exc})")
+        except UNREACHABLE as exc:
+            self._hub.warn(f"spotify: could not get an access token ({_why(exc)})")
             return None
 
         return self._token
@@ -139,7 +142,7 @@ class LibrespotApi:
                 if reply.status != 200:
                     return None
                 return await reply.read()
-        except aiohttp.ClientError:
+        except UNREACHABLE:
             return None
 
     async def _listen(self) -> None:
@@ -176,8 +179,12 @@ class LibrespotApi:
             async with self._session.get(f"{self._base}/status") as reply:
                 if reply.status == 200:
                     await self._on_event("status", await reply.json())
-        except aiohttp.ClientError:
+        except UNREACHABLE:
             pass
+
+
+def _why(exc: Exception) -> str:
+    return str(exc) or "timed out"
 
 
 def _retry_after_seconds(header: str | None) -> float:
