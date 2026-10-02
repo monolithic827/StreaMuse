@@ -10,13 +10,14 @@ build to reach anyone."""
 
 import asyncio
 import os
+import subprocess
 import tempfile
 import zipfile
 from pathlib import Path
 
 import aiohttp
 
-from . import paths
+from . import jobs, paths
 from .state import DependencyView
 
 FFMPEG_URL = (
@@ -37,6 +38,9 @@ GO_LIBRESPOT_URL = (
 YT_DLP_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
 
 USER_AGENT = "StreaMuse/1.0"
+
+CREATE_NO_WINDOW = 0x08000000
+YT_DLP_UPDATE_TIMEOUT = 120
 
 
 class DependencyManager:
@@ -62,7 +66,7 @@ class DependencyManager:
             await self._ensure_go_librespot()
             self.ffmpeg = await self._ensure_ffmpeg()
             self.cloudflared = await self._ensure_single("cloudflared.exe", CLOUDFLARED_URL, "cloudflared")
-            self.yt_dlp = await self._ensure_single("yt-dlp.exe", YT_DLP_URL, "yt-dlp")
+            self.yt_dlp = await self._ensure_yt_dlp()
 
             self._hub.set_dependencies([
                 DependencyView("ffmpeg", self.ffmpeg),
@@ -136,6 +140,44 @@ class DependencyManager:
 
         self._hub.info(f"{label} installed to {target}")
         return str(target)
+
+    async def _ensure_yt_dlp(self) -> str | None:
+        existing = resolve("yt-dlp.exe")
+        # One downloaded just now is the latest already, and one found on PATH is somebody else's
+        # install to keep current.
+        if existing and Path(existing).parent == paths.BIN_DIR:
+            await self._update_yt_dlp(existing)
+            return existing
+        return await self._ensure_single("yt-dlp.exe", YT_DLP_URL, "yt-dlp")
+
+    async def _update_yt_dlp(self, path: str) -> None:
+        """resolve() is satisfied by any copy at all, so without this the one downloaded on first
+        launch is the one used forever. yt-dlp's own updater compares against the latest release
+        and replaces the exe in place."""
+        try:
+            process = await asyncio.create_subprocess_exec(
+                path, "-U",
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                creationflags=CREATE_NO_WINDOW,
+            )
+        except OSError as exc:
+            self._hub.warn(f"yt-dlp update check failed: {exc}")
+            return
+        jobs.adopt(process)
+
+        try:
+            output, _ = await asyncio.wait_for(process.communicate(), YT_DLP_UPDATE_TIMEOUT)
+        except TimeoutError:
+            process.kill()
+            self._hub.warn("yt-dlp update check failed: timed out")
+            return
+
+        lines = output.decode(errors="replace").strip().splitlines()
+        last = lines[-1] if lines else f"exited {process.returncode}"
+        if process.returncode != 0:
+            self._hub.warn(f"yt-dlp update check failed: {last[:200]}")
+        else:
+            self._hub.info(last)
 
     async def _download(self, url: str, destination: Path, label: str) -> None:
         partial = destination.with_suffix(destination.suffix + ".part")

@@ -67,7 +67,11 @@ ordinary push - run it by hand when the patch or the ref changes.
 `releases/latest/download/yt-dlp.exe` - no tag of ours, nothing to build. It is the only dependency
 whose *staleness* is a functional bug rather than a missed improvement, since its extractors break
 whenever YouTube changes, so bundling it or pinning a ref would guarantee the one failure mode that
-matters. See the yt-dlp section for what that costs.
+matters. See the yt-dlp section for what that costs. Downloading `latest` is only half of it:
+`resolve()` is satisfied by any copy at all, so the one fetched on first launch was the one used
+forever. `ensure_all` therefore runs `yt-dlp -U` on the copy in `BIN_DIR` - its own updater, about
+1.5 s when there is nothing to do - and leaves one found on PATH alone, since that is somebody
+else's install. A failed check only warns; the existing exe keeps working.
 
 There is **no test project**. Verification is done by running the app and checking real behaviour.
 
