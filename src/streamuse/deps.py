@@ -10,13 +10,15 @@ build to reach anyone."""
 
 import asyncio
 import os
+import shutil
+import subprocess
 import tempfile
 import zipfile
 from pathlib import Path
 
 import aiohttp
 
-from . import paths
+from . import jobs, paths
 from .state import DependencyView
 
 FFMPEG_URL = (
@@ -37,6 +39,8 @@ GO_LIBRESPOT_URL = (
 YT_DLP_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
 
 USER_AGENT = "StreaMuse/1.0"
+
+CREATE_NO_WINDOW = 0x08000000
 
 
 class DependencyManager:
@@ -82,14 +86,11 @@ class DependencyManager:
 
         try:
             await self._download(FFMPEG_URL, archive, "ffmpeg")
-            with zipfile.ZipFile(archive) as zf:
-                # The archive nests everything under ffmpeg-master-latest-win64-gpl/bin/.
-                name = next(
-                    (n for n in zf.namelist() if n.lower().endswith("bin/ffmpeg.exe")), None)
-                if name is None:
-                    self._hub.error("ffmpeg archive did not contain bin/ffmpeg.exe")
-                    return None
-                target.write_bytes(zf.read(name))
+            # Off the loop: it is seconds of unpacking, and the receiver that was started before
+            # the downloads is already running on it.
+            if not await asyncio.to_thread(_unpack_ffmpeg, archive, target):
+                self._hub.error("ffmpeg archive did not contain bin/ffmpeg.exe")
+                return None
         except Exception as exc:
             self._hub.error(f"ffmpeg download failed: {exc}")
             return None
@@ -110,8 +111,7 @@ class DependencyManager:
 
         try:
             await self._download(GO_LIBRESPOT_URL, archive, "go-librespot")
-            with zipfile.ZipFile(archive) as zf:
-                zf.extractall(paths.BIN_DIR)
+            await asyncio.to_thread(_unpack_go_librespot, archive)
         except Exception as exc:
             self._hub.error(f"go-librespot download failed: {exc}")
             return
@@ -136,6 +136,33 @@ class DependencyManager:
 
         self._hub.info(f"{label} installed to {target}")
         return str(target)
+
+    async def update_yt_dlp(self) -> None:
+        """resolve() is satisfied by any copy at all, so without this the one downloaded on first
+        launch is the one used forever. yt-dlp's own updater compares against the latest release
+        and replaces the exe in place. One found on PATH is somebody else's install to keep current.
+
+        Never ended early: the swap is two renames, and ending it between them leaves no exe."""
+        if self.yt_dlp is None or Path(self.yt_dlp).parent != paths.BIN_DIR:
+            return
+        try:
+            process = await asyncio.create_subprocess_exec(
+                self.yt_dlp, "-U",
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                creationflags=CREATE_NO_WINDOW,
+            )
+        except OSError as exc:
+            self._hub.warn(f"yt-dlp update check failed: {exc}")
+            return
+        jobs.adopt(process)
+
+        output, _ = await process.communicate()
+        lines = output.decode(errors="replace").strip().splitlines()
+        last = lines[-1] if lines else f"exited {process.returncode}"
+        if process.returncode != 0:
+            self._hub.warn(f"yt-dlp update check failed: {last[:200]}")
+        else:
+            self._hub.info(last)
 
     async def _download(self, url: str, destination: Path, label: str) -> None:
         partial = destination.with_suffix(destination.suffix + ".part")
@@ -165,6 +192,38 @@ class DependencyManager:
             partial.replace(destination)
         finally:
             partial.unlink(missing_ok=True)
+
+
+def _unpack_ffmpeg(archive: Path, target: Path) -> bool:
+    with zipfile.ZipFile(archive) as zf:
+        # The archive nests everything under ffmpeg-master-latest-win64-gpl/bin/.
+        name = next((n for n in zf.namelist() if n.lower().endswith("bin/ffmpeg.exe")), None)
+        if name is None:
+            return False
+
+        # resolve() trusts whatever sits at the final name, so it only appears there whole.
+        partial = target.with_suffix(target.suffix + ".part")
+        try:
+            with zf.open(name) as source, partial.open("wb") as handle:
+                shutil.copyfileobj(source, handle)
+            partial.replace(target)
+        finally:
+            partial.unlink(missing_ok=True)
+    return True
+
+
+def _unpack_go_librespot(archive: Path) -> None:
+    """Unpacked beside the bin folder's own files and moved in with the exe last: resolve() reads
+    the exe's presence as the whole set being there."""
+    staging = paths.BIN_DIR / "go-librespot.part"
+    shutil.rmtree(staging, ignore_errors=True)
+    try:
+        with zipfile.ZipFile(archive) as zf:
+            zf.extractall(staging)
+        for file in sorted(staging.iterdir(), key=lambda f: f.name.lower() == "go-librespot.exe"):
+            file.replace(paths.BIN_DIR / file.name)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 def resolve(exe: str) -> str | None:

@@ -13,7 +13,7 @@ import re
 
 import aiohttp
 
-from .. import RequestTrack
+from .. import UNREACHABLE, RequestTrack, why
 
 SEARCH_URL = "https://itunes.apple.com/search"
 LOOKUP_URL = "https://itunes.apple.com/lookup"
@@ -52,8 +52,8 @@ async def _get(url: str, params: dict, hub) -> dict | None:
                     return None
                 # The API answers as text/javascript, so aiohttp will not decode it unasked.
                 return await reply.json(content_type=None)
-    except aiohttp.ClientError as exc:
-        hub.warn(f"apple: could not reach the iTunes catalogue ({exc})")
+    except UNREACHABLE as exc:
+        hub.warn(f"apple: could not reach the iTunes catalogue ({why(exc)})")
         return None
 
 

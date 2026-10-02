@@ -9,7 +9,9 @@ from . import jobs
 from .state import TUNNEL_ERROR, TUNNEL_OFF, TUNNEL_STARTING, TUNNEL_UP, TunnelState
 
 CREATE_NO_WINDOW = 0x08000000
-QUICK_TUNNEL_URL = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
+#: Not api.: a failed request prints 'Post "https://api.trycloudflare.com/tunnel"', which is the
+#: endpoint that hands tunnels out rather than one of them.
+QUICK_TUNNEL_URL = re.compile(r"https://(?!api\.)[a-z0-9-]+\.trycloudflare\.com")
 STOP_TIMEOUT = 3
 
 
@@ -23,7 +25,9 @@ class CloudflaredTunnel:
         self._gate = asyncio.Lock()
         self._process: asyncio.subprocess.Process | None = None
         self._readers: list[asyncio.Task] = []
-        self._public_url: str | None = None
+        self._named = False
+        #: A quick tunnel's address, as cloudflared printed it.
+        self._origin: str | None = None
 
     async def start(self) -> bool:
         async with self._gate:
@@ -40,7 +44,8 @@ class CloudflaredTunnel:
                 return False
 
             self._hub.set_tunnel(TunnelState(TUNNEL_STARTING, None, None))
-            self._public_url = None
+            self._named = named
+            self._origin = None
 
             try:
                 process = await asyncio.create_subprocess_exec(
@@ -64,14 +69,27 @@ class CloudflaredTunnel:
             ]
 
             if named:
-                # A named tunnel prints no URL of its own; the hostname is the one configured.
-                host = self._settings.namedTunnelHostname.strip()
-                url = f"https://{host}/live/{self._settings.streamKey}/index.m3u8" if host else None
-                self._public_url = url
-                self._hub.set_tunnel(TunnelState(TUNNEL_UP, url, None))
+                self._announce()
                 self._hub.info("named tunnel started")
 
             return True
+
+    def refresh_url(self) -> None:
+        """The stream key is part of the URL, and a named tunnel's hostname is all there is to its
+        address, so a tunnel that is already up has to hear about a settings change."""
+        if self._hub.tunnel.status == TUNNEL_UP:
+            self._announce()
+
+    def _announce(self) -> str | None:
+        origin = self._origin
+        if self._named:
+            # A named tunnel prints no URL of its own; the hostname is the one configured.
+            host = self._settings.namedTunnelHostname.strip()
+            origin = f"https://{host}" if host else None
+
+        url = f"{origin}/live/{self._settings.streamKey}/index.m3u8" if origin else None
+        self._hub.set_tunnel(TunnelState(TUNNEL_UP, url, None))
+        return url
 
     def _arguments(self, named: bool) -> list[str]:
         if named:
@@ -85,13 +103,11 @@ class CloudflaredTunnel:
             if not line:
                 continue
 
-            if self._public_url is None:
+            if self._origin is None and not self._named:
                 match = QUICK_TUNNEL_URL.search(line)
                 if match:
-                    url = f"{match.group()}/live/{self._settings.streamKey}/index.m3u8"
-                    self._public_url = url
-                    self._hub.set_tunnel(TunnelState(TUNNEL_UP, url, None))
-                    self._hub.info(f"tunnel up - {url}")
+                    self._origin = match.group()
+                    self._hub.info(f"tunnel up - {self._announce()}")
                     continue
 
             if "ERR " in line or "error" in line.lower():
@@ -115,7 +131,7 @@ class CloudflaredTunnel:
             for task in self._readers:
                 task.cancel()
             self._readers = []
-            self._public_url = None
+            self._origin = None
 
             try:
                 process.kill()

@@ -69,7 +69,7 @@ def build(hub, settings, control_port: int, public_port: int):
     })
 
     control_app = control.build_app(
-        hub, deps, artwork, settings, pipeline, tunnel, sources, public_port)
+        hub, deps, artwork, settings, pipeline, tunnel, sources, control_port, public_port)
     public_app = public.build_app(hub, artwork, settings, sources)
 
     return artwork, deps, tunnel, pipeline, sources, control_app, public_app
@@ -153,6 +153,9 @@ async def _prepare(hub, deps, sources, settings) -> None:
     # selected there was nothing to start above. Selecting again is a no-op once one is running.
     if sources.active is None:
         await sources.select(settings.source)
+
+    # Last, and not part of ensure_all: it is a network round trip that nothing should wait on.
+    await deps.update_yt_dlp()
 
 
 def _shutdown(runtime, hub, pipeline, sources, tunnel, runners) -> None:

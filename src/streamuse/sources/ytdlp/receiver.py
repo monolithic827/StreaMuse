@@ -3,7 +3,7 @@ sits idle until a URL or search query is submitted through the panel, then resol
 and decodes it with ffmpeg into the same PCM sink every other receiver feeds.
 
 A track submitted while one is already playing queues behind it rather than replacing it - load()
-is the only entry point for both, and only starts playing immediately when the queue was empty. A
+is the only entry point for both, and the track only starts immediately when nothing was playing. A
 public song request (search()/enqueue()) feeds the same queue, so a request lines up behind
 whatever the panel started instead of needing a queue of its own.
 
@@ -22,10 +22,10 @@ from dataclasses import dataclass
 
 import aiohttp
 
-from .. import Receiver, Rejected, RequestTrack, TrackState
+from .. import UNREACHABLE, Receiver, Rejected, RequestTrack, TrackState
 from . import cache
 from .decoder import Decoder
-from .extractor import TrackInfo, extract
+from .extractor import DEFAULT_SEARCH, TrackInfo, extract
 
 THUMBNAIL_TIMEOUT = 10
 
@@ -52,14 +52,35 @@ PACER_SKIP_LATENCY_MS = 200
 #: "//host/path" is not bare text either - GenericIE._real_extract promotes it to http(s) before it
 #: ever looks at default_search, so it is fetched rather than searched for.
 _URL = re.compile(r"^(?:[a-zA-Z][a-zA-Z0-9+.-]*:)?//")
-_ALLOWED_HOST = re.compile(
-    r"^https?://(www\.|m\.|music\.)?(youtube\.com|youtu\.be|soundcloud\.com|on\.soundcloud\.com)/",
+
+#: A single track on either site. The queue takes one item per request, and a playlist or a
+#: channel is a lookup per entry.
+_TRACK_URL = re.compile(
+    r"^https?://(?:"
+    r"(?:www\.|m\.|music\.)?youtube\.com/(?:watch\?(?:[^#]*&)?v=|shorts/|live/)[\w-]{11}(?![\w-])"
+    r"|youtu\.be/[\w-]{11}(?![\w-])"
+    r"|(?:www\.|m\.)?soundcloud\.com/(?!you/|stations/)[\w-]+/"
+    r"(?!(?:tracks|albums|sets|reposts|likes|spotlight|comments)(?:[/?#]|$))[\w-]+"
+    r"|on\.soundcloud\.com/\w+"
+    r")",
     re.IGNORECASE,
 )
 
+#: Each search is a yt-dlp process of its own.
+MAX_SEARCHES = 2
 
-def _is_allowed(query: str) -> bool:
-    return not _URL.match(query) or bool(_ALLOWED_HOST.match(query))
+
+def _public_query(text: str) -> str | None:
+    """What a listener's text is handed to yt-dlp as, or None when it is not taken. Text that is
+    not a URL gets the search prefix itself, so it is searched for exactly as typed."""
+    # Stripped before the check: urlsplit drops leading whitespace of its own, so " https://..."
+    # reaches yt-dlp as a URL while an unstripped check reads it as text.
+    text = text.strip()
+    if not text:
+        return None
+    if _URL.match(text):
+        return text if _TRACK_URL.match(text) else None
+    return f"{DEFAULT_SEARCH}:{text}"
 
 
 @dataclass(frozen=True)
@@ -95,8 +116,9 @@ class YtDlpReceiver(Receiver):
         #: The resolve the current track is waiting on, held only so stop() and "next" can cancel it
         #: without first waiting for the gate it runs under. See _cancel_loading.
         self._loading: asyncio.Task | None = None
-        #: Kept so the advance a natural finish schedules cannot be collected while it runs.
+        #: The one detached advance, kept so it cannot be collected while it runs.
         self._advancing: asyncio.Task | None = None
+        self._searches = asyncio.Semaphore(MAX_SEARCHES)
         self._latency_ms = PACER_MAX_LATENCY_MS
 
     @property
@@ -114,6 +136,10 @@ class YtDlpReceiver(Receiver):
     @property
     def status_text(self) -> str:
         if self._decoder is None:
+            # The gate is held from the resolve to the decoder starting, so with nothing playing it
+            # is what says a track is on its way - load() has returned long before.
+            if self._gate.locked():
+                return "Loading the track"
             return "Paste a link, or search, for yt-dlp to play"
         suffix = f" - {len(self._queue)} queued" if self._queue else ""
         return (f"Playing '{self._title}'" if self._track.playing else f"Paused - '{self._title}'") + suffix
@@ -145,8 +171,9 @@ class YtDlpReceiver(Receiver):
 
     async def load(self, query: str) -> bool:
         """Queues the query behind whatever is already playing, or plays it immediately if nothing
-        is - the only distinction between "play" and "add to queue" is whether the queue was empty
-        when this was called."""
+        is - the only distinction between "play" and "add to queue" is whether anything was playing
+        when this was called. Returns once it is queued rather than once it plays, since the advance
+        holds the gate for as long as the track takes to download."""
         if self._sink is None:
             return False
         if self._deps.ffmpeg is None:
@@ -156,21 +183,20 @@ class YtDlpReceiver(Receiver):
             self._hub.error("yt-dlp.exe is not available - check the Dependencies panel")
             return False
 
-        async with self._gate:
-            self._queue.append(query)
-            if self._decoder is None:
-                await self._advance_locked()
-            else:
-                self._ensure_next_locked()
+        self._queue.append(query)
+        self._spawn_advance()
         return True
 
     async def search(self, query: str) -> RequestTrack | None:
-        query = query.strip()
-        if not query or not _is_allowed(query):
+        query = _public_query(query)
+        if query is None:
             return None
+        if self._searches.locked():
+            raise Rejected("too many searches right now - try again in a moment")
 
         try:
-            info = await extract(self._deps.yt_dlp, query, self._settings.cookiesFile)
+            async with self._searches:
+                info = await extract(self._deps.yt_dlp, query, self._settings.cookiesFile)
         except Rejected:
             # No results, live, too long - a message already safe to show a listener, so it goes to
             # the public search response instead of being swallowed as an extraction failure.
@@ -183,16 +209,21 @@ class YtDlpReceiver(Receiver):
             id=info.webpage_url, title=info.title, artist=info.artist, album="", artUrl=info.thumbnail_url)
 
     async def enqueue(self, track_id: str) -> bool:
-        # Stripped before the check as well as after it: urlsplit drops leading whitespace of its
-        # own, so " https://..." reaches yt-dlp as a URL while an unstripped check reads it as text.
-        track_id = track_id.strip()
-        if not track_id or not _is_allowed(track_id):
-            return False
-        return await self.load(track_id)
+        # Checked again rather than trusted: the id a listener posts need not be one search() gave.
+        query = _public_query(track_id)
+        return query is not None and await self.load(query)
+
+    def _spawn_advance(self) -> None:
+        # Never a second one. An advance still in flight reads the queue again after its last
+        # await, so it picks up whatever was appended meanwhile - while a second, queued on the
+        # gate, would be handed it ahead of a stop() or "next" that had already cancelled the load
+        # in front, and start the following download under the gate they are waiting for.
+        if self._advancing is None or self._advancing.done():
+            self._advancing = asyncio.create_task(self._advance())
 
     async def _advance(self) -> None:
-        """The gate-acquiring entry point - only `_on_finished`'s detached task calls this one, since
-        every other caller already holds the gate when it wants the next queued item to start."""
+        """The gate-acquiring entry point, always run detached - by load() and by a natural finish,
+        neither of which holds the gate or can wait for a download under it."""
         try:
             async with self._gate:
                 await self._advance_locked()
@@ -201,17 +232,18 @@ class YtDlpReceiver(Receiver):
             self._hub.error(f"yt-dlp: could not start the next track - {exc}")
 
     async def _advance_locked(self) -> None:
-        """Plays the next queued item, if any - called once at start and again every time a track
-        ends, whether it finished on its own or was skipped. Assumes the gate is already held."""
-        # _on_finished clears the decoder off the gate, so a load() can get in and start the next
-        # track before the advance it scheduled runs. Without this the advance starts a second
-        # decoder over a live one: both pace into the sink, and the first is no longer referenced
-        # by anything that could stop it.
-        if self._decoder is not None or not self._queue:
-            return
-        query = self._queue.pop(0)
-        task, self._next = self._next, None
-        await self._play(query, task)
+        """Plays the next queued item if nothing is playing, and has the one after it prefetched
+        either way - called for every load() and again every time a track ends, whether it finished
+        on its own or was skipped. Assumes the gate is already held."""
+        # A load() while a track plays lands here wanting only the prefetch, and _on_finished clears
+        # the decoder off the gate, so "next" can have started a track before the advance it
+        # scheduled runs. Without the decoder check either would start a second one over a live
+        # one: both pace into the sink, and the first is no longer referenced by anything that
+        # could stop it.
+        if self._decoder is None and self._queue:
+            query = self._queue.pop(0)
+            task, self._next = self._next, None
+            await self._play(query, task)
         self._ensure_next_locked()
 
     def _cancel_loading(self) -> None:
@@ -307,7 +339,7 @@ class YtDlpReceiver(Receiver):
         it over with call_soon_threadsafe, so scheduling the next track from here is safe."""
         self._decoder = None
         self._track.set_playing(False)
-        self._advancing = asyncio.create_task(self._advance())
+        self._spawn_advance()
 
     def _deliver(self, pcm: bytes) -> None:
         if self._sink is not None:
@@ -324,5 +356,5 @@ async def _fetch(url: str) -> bytes | None:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=THUMBNAIL_TIMEOUT)) as session:
             async with session.get(url) as reply:
                 return await reply.read() if reply.status == 200 else None
-    except (aiohttp.ClientError, TimeoutError):
+    except UNREACHABLE:
         return None

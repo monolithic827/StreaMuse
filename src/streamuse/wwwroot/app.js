@@ -25,8 +25,8 @@ async function post(path, body) {
     body: body ? JSON.stringify(body) : undefined
   });
   if (!response.ok) {
-    let detail = '';
-    try { detail = (await response.json()).detail || ''; } catch { /* no body */ }
+    // The backend says why in a plain-text body.
+    const detail = (await response.text().catch(() => '')).trim();
     throw new Error(detail || (path + ' → ' + response.status));
   }
   return response;
@@ -38,9 +38,13 @@ function connect() {
   socket.onmessage = event => {
     const message = JSON.parse(event.data);
     if (message.type === 'state') {
+      // Only the snapshot a socket opens with carries the log; after that lines arrive one by one.
+      const opening = Boolean(message.log);
+      if (!opening) message.log = state.log;
       state = message;
       settings = message.settings;
       render();
+      if (opening) renderLog();
     } else if (message.type === 'meter') {
       renderMeter(message.bars, message.peakDb, message.signal);
     } else if (message.type === 'log') {
@@ -170,7 +174,6 @@ function render() {
 
   renderCover();
   renderHealth(view);
-  renderLog();
   renderDeps();
   renderRequests();
   applyTheme();

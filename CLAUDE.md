@@ -67,7 +67,14 @@ ordinary push - run it by hand when the patch or the ref changes.
 `releases/latest/download/yt-dlp.exe` - no tag of ours, nothing to build. It is the only dependency
 whose *staleness* is a functional bug rather than a missed improvement, since its extractors break
 whenever YouTube changes, so bundling it or pinning a ref would guarantee the one failure mode that
-matters. See the yt-dlp section for what that costs.
+matters. See the yt-dlp section for what that costs. Downloading `latest` is only half of it:
+`resolve()` is satisfied by any copy at all, so the one fetched on first launch was the one used
+forever. `app._prepare` therefore runs `yt-dlp -U` on the copy in `BIN_DIR` - its own updater,
+about 1.5 s when there is nothing to do - and leaves one found on PATH alone, since that is somebody
+else's install. A failed check only warns; the existing exe keeps working. It runs last and outside
+`ensure_all`, which the second `select` and the panel's Refresh both wait on. It has no timeout
+because nothing waits on it, and it must never be ended early: the updater swaps the exe with two
+renames, and ending it between them leaves no `yt-dlp.exe` at all.
 
 There is **no test project**. Verification is done by running the app and checking real behaviour.
 
@@ -115,6 +122,14 @@ YtDlpReceiver    panel URL/search ─ yt-dlp extract ─ ffmpeg decode ┘
 `StateHub` is the single source of truth. Everything the UI shows arrives in one snapshot pushed
 over the WebSocket; the panel is a pure view and only ever posts intents back (start/stop, settings,
 transport). When adding UI data, put it in the snapshot rather than adding a poll endpoint.
+
+Two things keep that snapshot cheap, and both have a catch. The log rides only in the snapshot a
+socket opens with (and in `/api/state`); every later push leaves it out, because lines already reach
+the panel one by one as `log` messages - measured, 385 KiB of pushes per five seconds of playback
+came down to 9. And a setter handed the value it already holds pushes nothing, since the source is
+republished every second regardless. The catch: `settings` is embedded in the snapshot rather than
+set through the hub, so nothing notices it change - `save_settings` calls `hub.refresh()` itself,
+and anything else that mutates settings has to as well.
 
 **Both receivers deliver interleaved s16le at 44.1 kHz**, which is what `sources.SAMPLE_RATE`, the
 pacer and ffmpeg's audio input are set to. The encoder still emits 48 kHz AAC, so the output contract
@@ -237,7 +252,9 @@ panel still receives the version as a number: nothing validates it there.
 - When a hole in the sequence has nothing behind it, the sender stopped rather than dropped a packet:
   park the cursor and resume wherever it speaks again. Filling silence there instead would emit
   forever. A hole with later packets waiting is a real loss and does get silence, so the timeline
-  stays honest.
+  stays honest. "Nothing behind it" is an empty buffer, so a packet that arrives after the cursor
+  passed its slot is dropped rather than stored: nothing would ever release it, and one stale entry
+  makes every later stop look like a hole.
 - ffmpeg's ALAC decoder needs the **36-byte `alac` atom**, not the bare 24-byte body the SDP fmtp
   describes. `alac.magic_cookie` rebuilds it, and its output is byte-identical to what ffmpeg writes
   for its own ALAC files - which is how it was verified.
@@ -312,7 +329,10 @@ panel still receives the version as a number: nothing validates it there.
   nothing to start until the download finishes.
 - The downloaded archive carries the exe **and** its DLLs together, so a machine gets a working set
   or none at all. Do not split them into two downloads again: the pair that is half-installed is the
-  one that fails in Windows' own "DLL was not found" dialog, which never names go-librespot.
+  one that fails in Windows' own "DLL was not found" dialog, which never names go-librespot. The
+  same goes for unpacking it: `resolve()` trusts whatever sits at the final name, so the set is
+  staged in `go-librespot.part` and moved in with the exe last, and ffmpeg is written to a `.part`
+  and renamed. Extracted in place, a failure half-way left a binary that was used from then on.
 - The named pipe instance must exist **before** the daemon starts, because go-librespot is the client
   and its open fails outright when nothing is listening.
 - go-librespot closes the pipe on stop and on playback moving to another device, and reopens it on the
@@ -381,6 +401,14 @@ panel still receives the version as a number: nothing validates it there.
   Measured against a real search that already takes seconds of network, it is not dominant - time to
   first audio went 4.4 s to 3.7 s across the change - but it is why nothing here should call
   `extract()` speculatively.
+- **Never `process.kill()` yt-dlp.exe; use `jobs.end`.** The exe is a PyInstaller bootloader and the
+  real program is its *child*. Killing the bootloader - measured - leaves that child running to
+  completion and the `_MEI…` folder it unpacked in `%TEMP%` for good. Ending the child instead lets
+  the bootloader see it exit, delete the folder and follow, in about 0.4 s. For its first ~0.3 s
+  the bootloader is still unpacking and has no child, and killing it then leaks the folder just the
+  same, so `jobs.end` waits for the child to appear. `extract()` does that
+  when it is cancelled (a skip, a discarded prefetch) and when `EXTRACT_TIMEOUT` passes; before,
+  a cancelled resolve was simply abandoned to finish on its own and a stalled one never ended.
 - `extract()` reads `yt-dlp.exe -J`, whose JSON is the same dict the Python API returned: a search
   comes back as a `playlist` with `entries`, a direct URL as a `video` with the chosen format's
   `url` and `http_headers` already merged in at the top level. Verified against both shapes. It
@@ -415,28 +443,41 @@ panel still receives the version as a number: nothing validates it there.
   measured, a bad URL now reports `Server returned 404 Not Found` where it used to report only
   `exited 3419392776`. It drains stdout and stderr concurrently into `bytearray`s rather than calling
   `communicate()`, which joins a chunk list at the end and so holds a whole track's PCM twice.
-- `cookiesFile` is one Netscape-format `cookies.txt` for both sites, a straight passthrough to
-  yt-dlp's `cookiefile` option, which filters by domain on its own - there is no per-source cookie
-  setting to keep in sync.
+- `cookiesFile` is one Netscape-format `cookies.txt` for both sites, handed to yt-dlp's `--cookies`,
+  which filters by domain on its own - there is no per-source cookie setting to keep in sync.
+  **yt-dlp gets a copy, never the file itself.** `--cookies` is also where it dumps its cookie jar
+  as it exits, failed runs included - measured, a 73-byte file came back as 971 bytes "generated by
+  yt-dlp" after one resolve - so the host's export was rewritten by every run, by a prefetch and a
+  listener's search at once, and by a process that may be ended mid-write. `extract()` copies it
+  into a temporary folder per run and the folder goes with the run. The cost is that nothing
+  yt-dlp is sent back persists to the next run, the same as `--cookies-from-browser`.
 - **`load()` queues rather than replaces**, so a song request lines up behind whatever the panel
   already started instead of needing a queue of its own. It always appends to `self._queue` and
-  only starts a decoder itself when the queue was empty - so "play" and "add to queue" are the same
-  call, and which one it looks like depends only on whether something was already playing.
-  `control("next")` and a natural end (the decoder's `on_finished`) both advance the same way: stop
-  (or notice it already stopped), pop the next query, resolve and play it. `self._gate`
-  (an `asyncio.Lock`) serializes every path that can start or stop a decoder - `load()`, `control()`,
-  `stop()`, and the advance a natural finish schedules - because a track ending on its own at the
-  same moment as a manual "next" (or two quick loads) could otherwise each see the decoder as free
-  and start one of their own. `_advance_locked()` assumes the caller already holds the gate (every
-  internal caller does); `_advance()` is the gate-acquiring wrapper, used only by `on_finished`'s
-  detached task, which is not already holding anything.
+  spawns the advance - so "play" and "add to queue" are the same call, and which one it looks like
+  depends only on whether something was already playing. `control("next")` and a natural end (the
+  decoder's `on_finished`) both advance the same way: stop (or notice it already stopped), pop the
+  next query, resolve and play it. `self._gate` (an `asyncio.Lock`) serializes every path that can
+  start or stop a decoder - `control()`, `stop()`, and the detached advance - because a track ending
+  on its own at the same moment as a manual "next" could otherwise each see the decoder as free and
+  start one of their own. `_advance_locked()` assumes the caller already holds the gate;
+  `_advance()` is the gate-acquiring wrapper, only ever run detached.
+- **`load()` returns once the query is queued, not once it plays.** It used to take the gate and
+  await the whole resolve-and-decode under it when nothing was playing, so the panel's POST and a
+  listener's `request` hung for the length of a download, and a second load behind them. Now it
+  only appends and calls `_spawn_advance`, measured at 0 ms against a 1 s resolve.
+  **There is never more than one detached advance.** An advance still in flight reads the queue
+  again after its last await, so it picks up anything appended meanwhile. A second one waiting on
+  the gate would be handed it *ahead* of a `stop()` or "next" that had already cancelled the load in
+  front - and start the following download under the gate they are waiting for, which for "next"
+  ends with that track stopped too and two skipped for one press.
 - **The gate alone is not enough, because `_on_finished` clears `self._decoder` off the gate.** It
   runs straight from the pacing thread's `call_soon_threadsafe` and only *schedules* the advance, so
-  a `load()` can take the gate in between, see no decoder and start the next track itself; the
+  a "next" can take the gate in between, see no decoder and start the next track itself; the
   scheduled advance then starts a *second* decoder over that live one - both pacing into the sink,
   with the first no longer referenced by anything that could stop it. `_advance_locked` therefore
-  returns early when a decoder already exists. Verified by removing that line: the same sequence
-  really does leave two decoders running.
+  starts nothing when a decoder already exists - which is also what a `load()` during playback
+  relies on, wanting only the prefetch. Verified by removing that check: the same sequence really
+  does leave two decoders running.
 - **`stop()` and `control("next")` cancel the in-flight resolve *before* asking for the gate.**
   `_play` awaits `_resolve_and_cache` with the gate held, and `cache.download` gives ffmpeg
   `-reconnect` with no overall deadline, so against a stalled CDN the gate would be held for as long
@@ -498,23 +539,16 @@ panel still receives the version as a number: nothing validates it there.
   zero drift over a full track. Both changes are kept anyway as independently-justified
   simplifications (matching `PipeReader`'s own established pattern, and removing a live process from
   the timing-critical path), not as the actual fix.
-- **The actual fix was recognizing `AudioPacer`'s 600ms shed cap does not apply to this source the
-  way it does to AirPlay's or Spotify's live, real-time-only feeds.** That cap bounds latency for a
-  source with nothing to buffer ahead of; yt-dlp's track is already fully decoded before playback
-  starts, and each track resets its own pacing reference (a new `Decoder` per track), so whatever
-  small, real rate mismatch exists between this decoder's pacing and `AudioPacer`'s own drain rate -
-  measured live as a steady ~25ms/s climb, cause never fully identified - is bounded by that one
-  track's length rather than compounding across a session. `AudioPacer.push()` now takes an optional
-  `max_latency_ms` override (default unchanged at 600ms for AirPlay and Spotify);
-  `receiver.PACER_MAX_LATENCY_MS` gives yt-dlp 30 seconds instead, which a few seconds of PCM costs
-  nothing to hold next to the whole track already in memory. Verified against the real `AudioPacer`
-  class (not a hand-rolled stand-in - an earlier simulation gave misleading results because its own
-  drain-loop timing did not match the real one closely enough to trust) over a full real track:
-  `dropped_frames` stayed at zero throughout, where the same track reliably shed under the old 600ms
-  cap. A closed-loop correction (trimming `Decoder`'s own sleep against the observed buffer trend)
-  was tried first and rejected - reversing which direction should speed up vs. slow down being
-  genuinely easy to get backwards is why this is called out - since a much wider allowance solves the
-  same problem without needing to precisely rate-match anything at all.
+- **The shedding was the chunk size.** `Decoder` pushed 16384-frame chunks (372 ms) with a 200 ms
+  lead, onto the 200 ms `AudioPacer` holds in reserve - a peak near 572 ms against the 600 ms shed
+  cap, so ordinary timer jitter tipped it over. Spotify's pipe reads are far smaller, which is why
+  only this source shed. `CHUNK_BYTES` is 2048 frames (46 ms) now; keep it small against that cap.
+  Measured with the real `AudioPacer`, `Clock` and `Decoder` over a 20 s track: 372 ms chunks peak at
+  600 ms and shed up to 0.9 s, 46 ms chunks peak at 280 ms and shed nothing.
+  `AudioPacer.push()`'s `max_latency_ms` override and `receiver.PACER_MAX_LATENCY_MS` (30 s) are the
+  earlier fix, from before the cause was known - a cap that wide absorbs the overshoot instead of
+  avoiding it, and in the same simulation the buffer holds at about 600 ms under it rather than
+  climbing. Both are probably redundant now and are kept only until a live run says so.
 - **That wide allowance has to be given back on a skip.** Banked lead is harmless while a track
   plays, but the moment "next" is pressed it is the *skipped* track's audio, and `AudioPacer` has no
   partial flush - `reset()` belongs to the pipeline, and the receiver only ever holds a push
@@ -532,6 +566,11 @@ panel still receives the version as a number: nothing validates it there.
   `call_soon_threadsafe` and each client has its own queue - a mutation never blocks on a slow socket.
 - Detached tasks must log their exceptions. Anything swallowed here is invisible and presents as a
   frozen UI.
+- **An `except aiohttp.ClientError` around a request needs `TimeoutError` beside it.** The session's
+  own timeout raises the builtin, which is not a `ClientError`, so a slow server escapes the handler
+  that a refused connection lands in - measured against a server that accepts and never answers, in
+  the iTunes lookup (a 500 for the listener), DACP, and every go-librespot call, where a slow cover
+  fetch took the event socket down with it. It also stringifies to `""`, hence `timed out`.
 - Logging must never throw. The Windows console cannot encode every track title, so the print is
   guarded; prefer plain quotes over typographic ones in log and status strings.
 - Nothing in `app._shutdown` may throw. It runs after the window has gone and there is no handler
@@ -554,7 +593,9 @@ panel still receives the version as a number: nothing validates it there.
   3.1 limits it is given; that is the tuned combination and the warning is expected.
 - The cover renderer caches the composed ground (blurred backdrop plus art) per artwork version and
   redraws only the text over it. The blur is most of the frame cost - 77 ms against 6 ms for a text
-  redraw - and only the progress and track fields change between frames.
+  redraw - and only the progress and track fields change between frames. `VideoPacer` calls
+  `render()` through `asyncio.to_thread`: on the loop, each new cover held the audio pacer and every
+  receiver up for about 150 ms.
 - Pillow draws glyphs in raw codepoint order with no bidi algorithm or Arabic joining, so RTL text
   (Hebrew, Arabic) came out backwards - "יום אחד" as "דחא םוי". `frames._rtl` reshapes with
   arabic-reshaper and reorders with python-bidi right before drawing; `_ellipsize` still runs first,
@@ -699,22 +740,10 @@ endpoint) rather than the receiver driven directly, and the antivirus diagnosis 
 era was never confirmed against Defender's own logs, only inferred from ffmpeg's own abnormal exit
 codes and slow process kills - now moot for this path either way, since nothing here touches disk.
 
-**The "audio buffer overran" shedding is fixed, though its root cause was never pinned down.** It
-survived the in-memory rewrite, moving `Decoder` to its own thread, and a closed-loop correction that
-trimmed the decoder's own pacing against the observed downstream buffer trend - none of which turned
-out to be the actual mechanism. Ruled out directly rather than just reasoned about: a loop stall
-(`/api/state` polled every 150ms during an actively shedding session came back in 0-2ms throughout);
-general CPU/memory contention (sampled live during shedding, both stayed low, neither `python` nor
-`ffmpeg` nor antivirus among the top consumers); the shared pipeline itself (Spotify, on the exact
-same `AudioPacer`/`Clock`/encoder on the same machine, plays cleanly - this was always specific to
-the yt-dlp path); resample drift (ffmpeg converting YouTube's 48kHz Opus to the pipeline's fixed
-44100Hz checked against a real track's precise source duration, clean - only the ordinary one-time
-Opus priming-sample trim, nothing accumulating); and the read/pace math itself (an isolated test of
-`Decoder`'s exact loop against a real track showed zero drift over its full real-time duration). What
-actually made the shedding stop is `AudioPacer.push()`'s `max_latency_ms` override (see the
-"Every track is fully resolved..." bullet above) - a small, real rate mismatch clearly exists between
-this decoder's pacing and `AudioPacer`'s drain rate (measured live as a steady ~25ms/s climb toward
-the old 600ms cap), but since yt-dlp's buffer is now sized to absorb tens of seconds of that per
-track rather than 600ms, whatever the mismatch's source is no longer needs to be found. Verified
-against the real `AudioPacer` class over a full real track: `dropped_frames` at zero throughout,
-where the same exact track reliably shed under the old cap.
+**The "audio buffer overran" shedding has its root cause**: 372 ms chunks left 28 ms of headroom
+under the 600 ms cap - see the chunk-size bullet in the yt-dlp section. Reproduced and fixed in a
+simulation driving the real `AudioPacer`, `Clock` and `Decoder`, not yet re-checked in a live
+stream; the 30 s cap and the skip cap that predate the finding are still in place for that reason.
+What was ruled out on the way stays ruled out: a loop stall, CPU or memory contention, the shared
+pipeline (Spotify plays cleanly through the same pacer), resample drift, and the read/pace math. The
+"~25ms/s climb" this file used to record did not reproduce - the buffer holds steady.

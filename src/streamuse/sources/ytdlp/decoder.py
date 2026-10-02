@@ -18,7 +18,9 @@ import time
 from .. import SAMPLE_RATE
 
 FRAME_BYTES = 4  # s16le stereo
-CHUNK_BYTES = (1 << 14) * FRAME_BYTES  # ~0.37s per chunk at 44100Hz
+#: ~46 ms. AudioPacer's buffer peaks at one chunk plus LEAD_SECONDS plus its own 200 ms reserve, and
+#: sheds past 600 ms, so keep a chunk small against that cap.
+CHUNK_BYTES = (1 << 11) * FRAME_BYTES
 
 #: How far ahead of real time the pacing may run before it throttles.
 LEAD_SECONDS = 0.2

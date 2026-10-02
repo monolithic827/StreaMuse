@@ -11,8 +11,9 @@ IMMUTABLE = "public, max-age=31536000, immutable"
 PLAYER_COMMANDS = ("playpause", "next", "prev")
 
 
-def build_app(hub, deps, artwork, settings, pipeline, tunnel, sources, public_port: int) -> web.Application:
-    app = web.Application()
+def build_app(hub, deps, artwork, settings, pipeline, tunnel, sources,
+              control_port: int, public_port: int) -> web.Application:
+    app = web.Application(middlewares=[_panel_only(control_port)])
 
     async def state(_request):
         return _json(hub.snapshot())
@@ -32,16 +33,23 @@ def build_app(hub, deps, artwork, settings, pipeline, tunnel, sources, public_po
             raise web.HTTPBadRequest()
 
         previous_source = settings.source
+        previous_name = _advertised_name(settings)
         settings.apply(incoming)
         settings.save()
 
         # The stream key is part of the URL and the public endpoint reads it live, so a URL built
-        # at startup 404s after a key change. This also rebroadcasts the saved settings.
+        # at startup 404s after a key change - the tunnel's as much as the local one.
         hub.set_local_url(hls.local_url(public_port, settings.streamKey))
+        tunnel.refresh_url()
+        hub.refresh()
         hub.info("settings saved - encoder changes apply on next start")
 
         if settings.source != previous_source:
             await sources.select(settings.source)
+        elif _advertised_name(settings) != previous_name:
+            # A receiver advertises the name it was started with, so the new one needs a restart
+            # to reach the device pickers.
+            await sources.select(settings.source, restart=True)
 
         return _json(settings.to_dict())
 
@@ -123,6 +131,27 @@ def build_app(hub, deps, artwork, settings, pipeline, tunnel, sources, public_po
     app.router.add_static("/", paths.wwwroot())
 
     return app
+
+
+def _advertised_name(settings) -> str:
+    return {"apple": settings.receiverName,
+            "spotify": settings.spotifyConnectDeviceName}.get(settings.source, "")
+
+
+def _panel_only(port: int):
+    """The panel is this API's one client and is always loaded from this address, so a request
+    has to name it as its host and, when it says where it came from, as its origin."""
+    hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
+    origins = {f"http://{host}" for host in hosts}
+
+    @web.middleware
+    async def check(request, handler):
+        origin = request.headers.get("Origin")
+        if request.host not in hosts or (origin is not None and origin not in origins):
+            raise web.HTTPForbidden()
+        return await handler(request)
+
+    return check
 
 
 def _json(payload) -> web.Response:

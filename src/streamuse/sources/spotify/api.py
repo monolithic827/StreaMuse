@@ -12,7 +12,7 @@ import time
 
 import aiohttp
 
-from .. import RequestTrack
+from .. import UNREACHABLE, RequestTrack, why
 
 RECONNECT_DELAY = 2
 REQUEST_TIMEOUT = 5
@@ -60,8 +60,8 @@ class LibrespotApi:
         try:
             async with self._session.post(f"{self._base}/player/{path}") as reply:
                 return reply.status < 400
-        except aiohttp.ClientError as exc:
-            self._hub.warn(f"spotify: command failed ({exc})")
+        except UNREACHABLE as exc:
+            self._hub.warn(f"spotify: command failed ({why(exc)})")
             return False
 
     async def add_to_queue(self, uri: str) -> bool:
@@ -72,8 +72,8 @@ class LibrespotApi:
                 f"{self._base}/player/add_to_queue", json={"uri": uri}
             ) as reply:
                 return reply.status < 400
-        except aiohttp.ClientError as exc:
-            self._hub.warn(f"spotify: could not queue the track ({exc})")
+        except UNREACHABLE as exc:
+            self._hub.warn(f"spotify: could not queue the track ({why(exc)})")
             return False
 
     async def search(self, query: str) -> RequestTrack | None:
@@ -105,8 +105,8 @@ class LibrespotApi:
                         self._hub.warn(f"spotify: search failed ({reply.status})")
                         return None
                     return _first_track(await reply.json())
-            except aiohttp.ClientError as exc:
-                self._hub.warn(f"spotify: search failed ({exc})")
+            except UNREACHABLE as exc:
+                self._hub.warn(f"spotify: search failed ({why(exc)})")
                 return None
 
         return None
@@ -125,8 +125,8 @@ class LibrespotApi:
                 if reply.status != 200:
                     return None
                 self._token = (await reply.json()).get("token") or None
-        except aiohttp.ClientError as exc:
-            self._hub.warn(f"spotify: could not get an access token ({exc})")
+        except UNREACHABLE as exc:
+            self._hub.warn(f"spotify: could not get an access token ({why(exc)})")
             return None
 
         return self._token
@@ -139,21 +139,31 @@ class LibrespotApi:
                 if reply.status != 200:
                     return None
                 return await reply.read()
-        except aiohttp.ClientError:
+        except UNREACHABLE:
             return None
 
     async def _listen(self) -> None:
         """The daemon takes a moment to bind its port, and restarts are its own business, so this
         keeps trying for as long as the receiver is selected."""
         announced = False
+        reported = ""
         while True:
             try:
                 await self._pump(announced)
                 announced = True
+                reported = ""
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except UNREACHABLE:
+                # Not listening yet, or gone away - what the retry is for.
                 pass
+            except Exception as exc:
+                # Anything else is a fault in handling an event, and the resync after each
+                # reconnect will usually hit it again - so it is said once, not every two seconds.
+                message = f"spotify: lost the event socket - {exc!r}"
+                if message != reported:
+                    reported = message
+                    self._hub.error(message)
             await asyncio.sleep(RECONNECT_DELAY)
 
     async def _pump(self, announced: bool) -> None:
@@ -176,7 +186,7 @@ class LibrespotApi:
             async with self._session.get(f"{self._base}/status") as reply:
                 if reply.status == 200:
                     await self._on_event("status", await reply.json())
-        except aiohttp.ClientError:
+        except UNREACHABLE:
             pass
 
 

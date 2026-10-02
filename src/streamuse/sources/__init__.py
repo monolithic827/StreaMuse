@@ -8,6 +8,8 @@ import asyncio
 import time
 from dataclasses import dataclass
 
+import aiohttp
+
 from ..state import NowPlaying, SourceOption, SourceState
 
 #: What every receiver delivers, and therefore what the pacer and ffmpeg's input are set to.
@@ -16,6 +18,14 @@ SAMPLE_RATE = 44100
 PUBLISH_INTERVAL = 1.0
 
 LABELS = {"apple": "Apple Music", "spotify": "Spotify", "ytdlp": "yt-dlp"}
+
+#: The session's own timeout raises TimeoutError, which is not a ClientError.
+UNREACHABLE = (aiohttp.ClientError, TimeoutError)
+
+
+def why(exc: Exception) -> str:
+    """TimeoutError stringifies to an empty string."""
+    return str(exc) or "timed out"
 
 
 class TrackState:
@@ -85,8 +95,8 @@ class Receiver:
 
     source = ""
 
-    #: What enqueue does to the sender: "queue" plays it after the current track, "play" starts it
-    #: now. Empty when the receiver cannot take requests at all.
+    #: What enqueue does with a request: "queue" plays it after the current track, "ask" parks it
+    #: for the host to open. Empty when the receiver cannot take requests at all.
     request_action = ""
 
     @property
@@ -153,10 +163,11 @@ class SourceManager:
     def active(self) -> Receiver | None:
         return self._active
 
-    async def select(self, source: str) -> None:
+    async def select(self, source: str, restart: bool = False) -> None:
+        """`restart` is for a setting the running receiver only read as it started."""
         async with self._gate:
             receiver = self._receivers.get(source)
-            if receiver is self._active:
+            if receiver is self._active and not restart:
                 return
 
             if self._active is not None:
