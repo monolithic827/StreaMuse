@@ -38,10 +38,10 @@ def build_app(hub, deps, artwork, settings, pipeline, tunnel, sources,
         settings.save()
 
         # The stream key is part of the URL and the public endpoint reads it live, so a URL built
-        # at startup 404s after a key change - the tunnel's as much as the local one. This also
-        # rebroadcasts the saved settings.
+        # at startup 404s after a key change - the tunnel's as much as the local one.
         hub.set_local_url(hls.local_url(public_port, settings.streamKey))
         tunnel.refresh_url()
+        hub.refresh()
         hub.info("settings saved - encoder changes apply on next start")
 
         if settings.source != previous_source:

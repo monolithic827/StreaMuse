@@ -170,7 +170,9 @@ class VideoPacer:
 
             # Cap catch-up so a stall cannot dump hundreds of frames at once.
             frames = min(due, fps)
-            jpeg = self._renderer.render()
+            # Off the loop: a new cover is a blur and a JPEG encode, and the audio pacer and every
+            # receiver share this thread.
+            jpeg = await asyncio.to_thread(self._renderer.render)
 
             writer.write(jpeg * frames)
             frames_written += frames

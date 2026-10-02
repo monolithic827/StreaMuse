@@ -120,6 +120,14 @@ YtDlpReceiver    panel URL/search ─ yt-dlp extract ─ ffmpeg decode ┘
 over the WebSocket; the panel is a pure view and only ever posts intents back (start/stop, settings,
 transport). When adding UI data, put it in the snapshot rather than adding a poll endpoint.
 
+Two things keep that snapshot cheap, and both have a catch. The log rides only in the snapshot a
+socket opens with (and in `/api/state`); every later push leaves it out, because lines already reach
+the panel one by one as `log` messages - measured, 385 KiB of pushes per five seconds of playback
+came down to 9. And a setter handed the value it already holds pushes nothing, since the source is
+republished every second regardless. The catch: `settings` is embedded in the snapshot rather than
+set through the hub, so nothing notices it change - `save_settings` calls `hub.refresh()` itself,
+and anything else that mutates settings has to as well.
+
 **Both receivers deliver interleaved s16le at 44.1 kHz**, which is what `sources.SAMPLE_RATE`, the
 pacer and ffmpeg's audio input are set to. The encoder still emits 48 kHz AAC, so the output contract
 is unchanged; ffmpeg does the conversion. Do not resample in Python - the pacer counts frames of the
@@ -582,7 +590,9 @@ panel still receives the version as a number: nothing validates it there.
   3.1 limits it is given; that is the tuned combination and the warning is expected.
 - The cover renderer caches the composed ground (blurred backdrop plus art) per artwork version and
   redraws only the text over it. The blur is most of the frame cost - 77 ms against 6 ms for a text
-  redraw - and only the progress and track fields change between frames.
+  redraw - and only the progress and track fields change between frames. `VideoPacer` calls
+  `render()` through `asyncio.to_thread`: on the loop, each new cover held the audio pacer and every
+  receiver up for about 150 ms.
 - Pillow draws glyphs in raw codepoint order with no bidi algorithm or Arabic joining, so RTL text
   (Hebrew, Arabic) came out backwards - "יום אחד" as "דחא םוי". `frames._rtl` reshapes with
   arabic-reshaper and reorders with python-bidi right before drawing; `_ellipsize` still runs first,
