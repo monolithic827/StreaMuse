@@ -40,7 +40,9 @@ class TrackInfo:
 
 
 async def extract(yt_dlp_path: str, query: str, cookies_file: str) -> TrackInfo:
-    arguments = ["-J", "-f", "bestaudio/best", "--no-playlist", "--default-search", DEFAULT_SEARCH]
+    # Only the first entry is ever used, and without --playlist-items every one is fully resolved.
+    arguments = ["-J", "-f", "bestaudio/best", "--no-playlist", "--playlist-items", "1",
+                 "--default-search", DEFAULT_SEARCH]
     if cookies_file:
         arguments += ["--cookies", cookies_file]
     # "--" so a listener's query starting with a dash is a search term rather than a flag.
@@ -65,7 +67,7 @@ async def extract(yt_dlp_path: str, query: str, cookies_file: str) -> TrackInfo:
     if entries is not None:
         info = next(iter(entries), None)
         if info is None:
-            raise Rejected(f"no results for '{query}'")
+            raise Rejected("no results")
 
     # A live stream has no fixed length - ffmpeg would pull from an open-ended HLS manifest instead
     # of a normal file, which the queue's one-track-then-advance model isn't built for.

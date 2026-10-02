@@ -424,23 +424,31 @@ panel still receives the version as a number: nothing validates it there.
   setting to keep in sync.
 - **`load()` queues rather than replaces**, so a song request lines up behind whatever the panel
   already started instead of needing a queue of its own. It always appends to `self._queue` and
-  only starts a decoder itself when the queue was empty - so "play" and "add to queue" are the same
-  call, and which one it looks like depends only on whether something was already playing.
-  `control("next")` and a natural end (the decoder's `on_finished`) both advance the same way: stop
-  (or notice it already stopped), pop the next query, resolve and play it. `self._gate`
-  (an `asyncio.Lock`) serializes every path that can start or stop a decoder - `load()`, `control()`,
-  `stop()`, and the advance a natural finish schedules - because a track ending on its own at the
-  same moment as a manual "next" (or two quick loads) could otherwise each see the decoder as free
-  and start one of their own. `_advance_locked()` assumes the caller already holds the gate (every
-  internal caller does); `_advance()` is the gate-acquiring wrapper, used only by `on_finished`'s
-  detached task, which is not already holding anything.
+  spawns the advance - so "play" and "add to queue" are the same call, and which one it looks like
+  depends only on whether something was already playing. `control("next")` and a natural end (the
+  decoder's `on_finished`) both advance the same way: stop (or notice it already stopped), pop the
+  next query, resolve and play it. `self._gate` (an `asyncio.Lock`) serializes every path that can
+  start or stop a decoder - `control()`, `stop()`, and the detached advance - because a track ending
+  on its own at the same moment as a manual "next" could otherwise each see the decoder as free and
+  start one of their own. `_advance_locked()` assumes the caller already holds the gate;
+  `_advance()` is the gate-acquiring wrapper, only ever run detached.
+- **`load()` returns once the query is queued, not once it plays.** It used to take the gate and
+  await the whole resolve-and-decode under it when nothing was playing, so the panel's POST and a
+  listener's `request` hung for the length of a download, and a second load behind them. Now it
+  only appends and calls `_spawn_advance`, measured at 0 ms against a 1 s resolve.
+  **There is never more than one detached advance.** An advance still in flight reads the queue
+  again after its last await, so it picks up anything appended meanwhile. A second one waiting on
+  the gate would be handed it *ahead* of a `stop()` or "next" that had already cancelled the load in
+  front - and start the following download under the gate they are waiting for, which for "next"
+  ends with that track stopped too and two skipped for one press.
 - **The gate alone is not enough, because `_on_finished` clears `self._decoder` off the gate.** It
   runs straight from the pacing thread's `call_soon_threadsafe` and only *schedules* the advance, so
-  a `load()` can take the gate in between, see no decoder and start the next track itself; the
+  a "next" can take the gate in between, see no decoder and start the next track itself; the
   scheduled advance then starts a *second* decoder over that live one - both pacing into the sink,
   with the first no longer referenced by anything that could stop it. `_advance_locked` therefore
-  returns early when a decoder already exists. Verified by removing that line: the same sequence
-  really does leave two decoders running.
+  starts nothing when a decoder already exists - which is also what a `load()` during playback
+  relies on, wanting only the prefetch. Verified by removing that check: the same sequence really
+  does leave two decoders running.
 - **`stop()` and `control("next")` cancel the in-flight resolve *before* asking for the gate.**
   `_play` awaits `_resolve_and_cache` with the gate held, and `cache.download` gives ffmpeg
   `-reconnect` with no overall deadline, so against a stalled CDN the gate would be held for as long

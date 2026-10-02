@@ -47,6 +47,7 @@ SEARCH_COOLDOWN = 3.0
 QUEUE_COOLDOWN = 60.0
 
 MAX_QUERY = 120
+MAX_ID = 300
 
 _DRIVE_RELATIVE = re.compile(r"^[A-Za-z]:")
 _asset_version: str | None = None
@@ -57,6 +58,12 @@ def is_safe_name(name: str) -> bool:
     a drive-relative name, so 'C:seg.ts' would resolve against drive C's current directory."""
     return bool(name) and not (
         "/" in name or "\\" in name or ".." in name or _DRIVE_RELATIVE.match(name))
+
+
+def _printable(text: str) -> str:
+    """Straight from the listener and headed for the log, so anything that could forge a second
+    line - or any other control character - comes out first."""
+    return "".join(c for c in text if c.isprintable())
 
 
 class Cooldown:
@@ -244,7 +251,7 @@ def _serve_now(request: web.Request, hub, settings, sources) -> web.Response:
 
 
 async def _serve_search(request: web.Request, sources, searches: Cooldown) -> web.Response:
-    query = (request.query.get("q") or "").strip()
+    query = _printable(request.query.get("q") or "").strip()
     if not query or len(query) > MAX_QUERY:
         return _json({"error": "Type something to search for."}, 400)
 
@@ -272,11 +279,12 @@ async def _serve_search(request: web.Request, sources, searches: Cooldown) -> we
 async def _serve_request(request: web.Request, hub, sources, queues: Cooldown) -> web.Response:
     try:
         body = await request.json()
-        track_id = str(body["id"])
-        # Straight from the listener and headed for the log, so anything that could forge a second
-        # line - or any other control character - comes out first.
-        title = "".join(c for c in str(body.get("title") or "") if c.isprintable())[:80]
+        track_id = _printable(str(body["id"]))
+        title = _printable(str(body.get("title") or ""))[:80]
     except (ValueError, KeyError, TypeError):
+        return _json({"error": "Bad request."}, 400)
+
+    if len(track_id) > MAX_ID:
         return _json({"error": "Bad request."}, 400)
 
     if not queues.take(request):
