@@ -165,7 +165,7 @@ class DependencyManager:
         try:
             output, _ = await asyncio.wait_for(process.communicate(), YT_DLP_UPDATE_TIMEOUT)
         except TimeoutError:
-            process.kill()
+            await jobs.end(process)
             self._hub.warn("yt-dlp update check failed: timed out")
             return
 

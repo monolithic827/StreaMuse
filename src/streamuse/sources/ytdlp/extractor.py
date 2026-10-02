@@ -27,6 +27,10 @@ DEFAULT_SEARCH = "ytsearch1"
 #: tie up the queue - and hold its whole decode in memory, see cache.py - for its entire length.
 MAX_DURATION_SECONDS = 15 * 60
 
+#: A resolve is seconds; this is only for a yt-dlp that has stopped answering, which would
+#: otherwise hold the queue's gate, or one of the public search slots, for good.
+EXTRACT_TIMEOUT = 90
+
 
 @dataclass(frozen=True)
 class TrackInfo:
@@ -64,7 +68,16 @@ async def _extract(yt_dlp_path: str, query: str, cookies: list[str]) -> TrackInf
         creationflags=CREATE_NO_WINDOW,
     )
     jobs.adopt(process)
-    stdout, stderr = await process.communicate()
+
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(), EXTRACT_TIMEOUT)
+    except (asyncio.CancelledError, TimeoutError) as exc:
+        # A discarded prefetch, a skip, or the timeout - either way nobody is left to read what it
+        # finds. Not process.kill(): see jobs.end.
+        await jobs.end(process)
+        if isinstance(exc, TimeoutError):
+            raise RuntimeError(f"yt-dlp gave no answer in {EXTRACT_TIMEOUT}s") from None
+        raise
 
     if process.returncode != 0:
         # yt-dlp's own "ERROR: [extractor] ..." line says why; the exit code is always 1.

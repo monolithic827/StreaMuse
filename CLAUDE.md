@@ -390,6 +390,14 @@ panel still receives the version as a number: nothing validates it there.
   Measured against a real search that already takes seconds of network, it is not dominant - time to
   first audio went 4.4 s to 3.7 s across the change - but it is why nothing here should call
   `extract()` speculatively.
+- **Never `process.kill()` yt-dlp.exe; use `jobs.end`.** The exe is a PyInstaller bootloader and the
+  real program is its *child*. Killing the bootloader - measured - leaves that child running to
+  completion and the `_MEI…` folder it unpacked in `%TEMP%` for good. Ending the child instead lets
+  the bootloader see it exit, delete the folder and follow, in about 0.4 s. For its first ~0.3 s
+  the bootloader is still unpacking and has no child, and killing it then leaks the folder just the
+  same, so `jobs.end` waits for the child to appear. `extract()` does that
+  when it is cancelled (a skip, a discarded prefetch) and when `EXTRACT_TIMEOUT` passes; before,
+  a cancelled resolve was simply abandoned to finish on its own and a stalled one never ended.
 - `extract()` reads `yt-dlp.exe -J`, whose JSON is the same dict the Python API returned: a search
   comes back as a `playlist` with `entries`, a direct URL as a `video` with the chosen format's
   `url` and `http_headers` already merged in at the top level. Verified against both shapes. It

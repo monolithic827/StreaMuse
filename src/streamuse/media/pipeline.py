@@ -51,6 +51,8 @@ class StreamPipeline:
         self._sample_rate = sample_rate
         self._session: _Session | None = None
         self._reported_shed_seconds = 0
+        #: Kept so the detached start cannot be collected while it runs.
+        self._auto_tunnel: asyncio.Task | None = None
 
     @property
     def running(self) -> bool:
@@ -135,9 +137,15 @@ class StreamPipeline:
         self._hub.info(f"streaming - {self._hub.local_url}")
 
         if self._settings.autoTunnel:
-            asyncio.create_task(self._tunnel.start())
+            self._auto_tunnel = asyncio.create_task(self._start_tunnel())
 
         return True
+
+    async def _start_tunnel(self) -> None:
+        try:
+            await self._tunnel.start()
+        except Exception as exc:
+            self._hub.error(f"could not start the tunnel: {exc}")
 
     async def stop(self) -> None:
         async with self._gate:

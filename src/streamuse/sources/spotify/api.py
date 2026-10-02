@@ -149,14 +149,23 @@ class LibrespotApi:
         """The daemon takes a moment to bind its port, and restarts are its own business, so this
         keeps trying for as long as the receiver is selected."""
         announced = False
+        reported = ""
         while True:
             try:
                 await self._pump(announced)
                 announced = True
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except UNREACHABLE:
+                # Not listening yet, or gone away - what the retry is for.
                 pass
+            except Exception as exc:
+                # Anything else is a fault in handling an event, and the resync after each
+                # reconnect will usually hit it again - so it is said once, not every two seconds.
+                message = f"spotify: lost the event socket - {exc!r}"
+                if message != reported:
+                    reported = message
+                    self._hub.error(message)
             await asyncio.sleep(RECONNECT_DELAY)
 
     async def _pump(self, announced: bool) -> None:
