@@ -67,9 +67,12 @@ class CoverFrameRenderer:
             if now.durationSeconds > 0 else 0.0
         )
 
-        # Quantised so a static track does not force a re-encode every frame.
+        # Quantised so a static track does not force a re-encode every frame. The whole second is
+        # there for the clock: the bar alone stands still with no duration, and on a long track
+        # only moves every duration/600 seconds.
         signature = "|".join(str(part) for part in (
-            self._artwork.version, now.title, now.artist, now.album, int(progress * 600)))
+            self._artwork.version, now.title, now.artist, now.album, int(progress * 600),
+            int(now.positionSeconds)))
 
         if self._last_frame is not None and signature == self._last_signature:
             return self._last_frame
