@@ -9,7 +9,9 @@ from . import jobs
 from .state import TUNNEL_ERROR, TUNNEL_OFF, TUNNEL_STARTING, TUNNEL_UP, TunnelState
 
 CREATE_NO_WINDOW = 0x08000000
-QUICK_TUNNEL_URL = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
+#: Not api.: a failed request prints 'Post "https://api.trycloudflare.com/tunnel"', which is the
+#: endpoint that hands tunnels out rather than one of them.
+QUICK_TUNNEL_URL = re.compile(r"https://(?!api\.)[a-z0-9-]+\.trycloudflare\.com")
 STOP_TIMEOUT = 3
 
 
