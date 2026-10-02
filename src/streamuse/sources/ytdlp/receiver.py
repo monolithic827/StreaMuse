@@ -136,6 +136,10 @@ class YtDlpReceiver(Receiver):
     @property
     def status_text(self) -> str:
         if self._decoder is None:
+            # The gate is held from the resolve to the decoder starting, so with nothing playing it
+            # is what says a track is on its way - load() has returned long before.
+            if self._gate.locked() or self._queue:
+                return "Loading the track"
             return "Paste a link, or search, for yt-dlp to play"
         suffix = f" - {len(self._queue)} queued" if self._queue else ""
         return (f"Playing '{self._title}'" if self._track.playing else f"Paused - '{self._title}'") + suffix
