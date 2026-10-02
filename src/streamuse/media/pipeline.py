@@ -181,7 +181,6 @@ class StreamPipeline:
         if self._hub.encoder.status != ERROR:
             self._hub.set_encoder(EncoderState(IDLE, 0, 0, 0, 0, None))
 
-        await self._tunnel.stop()
         self._hub.info("stream stopped")
 
     def _on_encoder_exit(self, session: _Session, code: int) -> None:
