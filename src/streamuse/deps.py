@@ -67,7 +67,8 @@ class DependencyManager:
             await self._ensure_go_librespot()
             self.ffmpeg = await self._ensure_ffmpeg()
             self.cloudflared = await self._ensure_single("cloudflared.exe", CLOUDFLARED_URL, "cloudflared")
-            self.yt_dlp = await self._ensure_yt_dlp()
+            ours = resolve("yt-dlp.exe")
+            self.yt_dlp = await self._ensure_single("yt-dlp.exe", YT_DLP_URL, "yt-dlp")
 
             self._hub.set_dependencies([
                 DependencyView("ffmpeg", self.ffmpeg),
@@ -75,6 +76,13 @@ class DependencyManager:
                 DependencyView("go-librespot", self.go_librespot),
                 DependencyView("yt-dlp", self.yt_dlp),
             ])
+
+            # Last, with the copy already usable and the list already published: the check is a
+            # network round trip, and on a stalled connection it runs to its timeout. One downloaded
+            # just now is the latest already, and one found on PATH is somebody else's install to
+            # keep current.
+            if ours and Path(ours).parent == paths.BIN_DIR:
+                await self._update_yt_dlp(ours)
 
     async def _ensure_ffmpeg(self) -> str | None:
         existing = resolve("ffmpeg.exe")
@@ -137,15 +145,6 @@ class DependencyManager:
 
         self._hub.info(f"{label} installed to {target}")
         return str(target)
-
-    async def _ensure_yt_dlp(self) -> str | None:
-        existing = resolve("yt-dlp.exe")
-        # One downloaded just now is the latest already, and one found on PATH is somebody else's
-        # install to keep current.
-        if existing and Path(existing).parent == paths.BIN_DIR:
-            await self._update_yt_dlp(existing)
-            return existing
-        return await self._ensure_single("yt-dlp.exe", YT_DLP_URL, "yt-dlp")
 
     async def _update_yt_dlp(self, path: str) -> None:
         """resolve() is satisfied by any copy at all, so without this the one downloaded on first

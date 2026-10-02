@@ -71,7 +71,9 @@ matters. See the yt-dlp section for what that costs. Downloading `latest` is onl
 `resolve()` is satisfied by any copy at all, so the one fetched on first launch was the one used
 forever. `ensure_all` therefore runs `yt-dlp -U` on the copy in `BIN_DIR` - its own updater, about
 1.5 s when there is nothing to do - and leaves one found on PATH alone, since that is somebody
-else's install. A failed check only warns; the existing exe keeps working.
+else's install. A failed check only warns; the existing exe keeps working. It runs last, after
+`self.yt_dlp` is set and the dependency list is published: ahead of them, a stalled connection kept
+the source reporting yt-dlp as missing until the check timed out.
 
 There is **no test project**. Verification is done by running the app and checking real behaviour.
 
