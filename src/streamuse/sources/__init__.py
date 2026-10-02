@@ -153,10 +153,11 @@ class SourceManager:
     def active(self) -> Receiver | None:
         return self._active
 
-    async def select(self, source: str) -> None:
+    async def select(self, source: str, restart: bool = False) -> None:
+        """`restart` is for a setting the running receiver only read as it started."""
         async with self._gate:
             receiver = self._receivers.get(source)
-            if receiver is self._active:
+            if receiver is self._active and not restart:
                 return
 
             if self._active is not None:
