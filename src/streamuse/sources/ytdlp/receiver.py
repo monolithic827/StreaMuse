@@ -22,7 +22,7 @@ from dataclasses import dataclass
 
 import aiohttp
 
-from .. import Receiver, Rejected, RequestTrack, TrackState
+from .. import UNREACHABLE, Receiver, Rejected, RequestTrack, TrackState
 from . import cache
 from .decoder import Decoder
 from .extractor import DEFAULT_SEARCH, TrackInfo, extract
@@ -138,7 +138,7 @@ class YtDlpReceiver(Receiver):
         if self._decoder is None:
             # The gate is held from the resolve to the decoder starting, so with nothing playing it
             # is what says a track is on its way - load() has returned long before.
-            if self._gate.locked() or self._queue:
+            if self._gate.locked():
                 return "Loading the track"
             return "Paste a link, or search, for yt-dlp to play"
         suffix = f" - {len(self._queue)} queued" if self._queue else ""
@@ -172,9 +172,8 @@ class YtDlpReceiver(Receiver):
     async def load(self, query: str) -> bool:
         """Queues the query behind whatever is already playing, or plays it immediately if nothing
         is - the only distinction between "play" and "add to queue" is whether anything was playing
-        when this was called. Returns once it is queued rather than once it plays: the advance holds
-        the gate for as long as the track takes to download, and the panel's POST and a listener's
-        request were both left hanging on it."""
+        when this was called. Returns once it is queued rather than once it plays, since the advance
+        holds the gate for as long as the track takes to download."""
         if self._sink is None:
             return False
         if self._deps.ffmpeg is None:
@@ -357,5 +356,5 @@ async def _fetch(url: str) -> bytes | None:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=THUMBNAIL_TIMEOUT)) as session:
             async with session.get(url) as reply:
                 return await reply.read() if reply.status == 200 else None
-    except (aiohttp.ClientError, TimeoutError):
+    except UNREACHABLE:
         return None

@@ -154,6 +154,9 @@ async def _prepare(hub, deps, sources, settings) -> None:
     if sources.active is None:
         await sources.select(settings.source)
 
+    # Last, and not part of ensure_all: it is a network round trip that nothing should wait on.
+    await deps.update_yt_dlp()
+
 
 def _shutdown(runtime, hub, pipeline, sources, tunnel, runners) -> None:
     """Runs with the window already gone and nothing above it to catch anything. Every step is

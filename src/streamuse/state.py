@@ -105,7 +105,7 @@ def dumps(payload) -> str:
 class StateHub:
     def __init__(self, settings) -> None:
         self.settings = settings
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._log: deque[LogLine] = deque(maxlen=LOG_CAPACITY)
         self._requests: deque[Requested] = deque(maxlen=REQUEST_CAPACITY)
         self._clients: set[asyncio.Queue] = set()
@@ -188,13 +188,15 @@ class StateHub:
         with self._lock:
             line = LogLine(datetime.now().strftime("%H:%M:%S"), level, message)
             self._log.appendleft(line)
+            # Under the lock, like a socket's opening snapshot, so each line reaches a socket once:
+            # in that snapshot or as this message, never both.
+            self._publish({"type": "log", "line": asdict(line)})
 
         # A console that cannot encode the message must not take the logger down with it.
         try:
             print(f"[{line.time}] {line.level:<5} {line.message}", flush=True)
         except (UnicodeEncodeError, OSError):
             pass
-        self._publish({"type": "log", "line": asdict(line)})
 
     def info(self, message: str) -> None:
         self.log("info", message)
@@ -234,12 +236,15 @@ class StateHub:
 
     async def accept_socket(self, socket) -> None:
         queue: asyncio.Queue = asyncio.Queue()
-        queue.put_nowait(dumps(self.snapshot()))
-        self._clients.add(queue)
+        with self._lock:
+            opening = self.snapshot()
+            self._clients.add(queue)
+        queue.put_nowait(dumps(opening))
         try:
             await self._pump(socket, queue)
         finally:
-            self._clients.discard(queue)
+            with self._lock:
+                self._clients.discard(queue)
 
     async def _pump(self, socket, queue: asyncio.Queue) -> None:
         """Push-only: reading just holds the socket open until the client leaves. The queue keeps
@@ -275,9 +280,10 @@ class StateHub:
             return
         if threading.current_thread() is threading.main_thread() and not loop.is_running():
             return
-        loop.call_soon_threadsafe(self._fan_out, payload)
+        loop.call_soon_threadsafe(self._fan_out, payload, list(self._clients))
 
-    def _fan_out(self, payload: dict) -> None:
+    @staticmethod
+    def _fan_out(payload: dict, clients: list) -> None:
         text = dumps(payload)
-        for queue in list(self._clients):
+        for queue in clients:
             queue.put_nowait(text)

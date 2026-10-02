@@ -59,27 +59,30 @@ class CoverFrameRenderer:
         self._last_frame: bytes | None = None
         self._last_signature = ""
 
-    def render(self) -> bytes:
-        """Current frame as JPEG, re-rendered only when something visible changed."""
-        now = self._hub.now_playing
-        progress = (
-            min(1.0, max(0.0, now.positionSeconds / now.durationSeconds))
-            if now.durationSeconds > 0 else 0.0
-        )
+    def cached(self) -> bytes | None:
+        """The last frame while nothing visible has changed since - cheap, unlike render()."""
+        if self._signature(self._hub.now_playing) == self._last_signature:
+            return self._last_frame
+        return None
 
+    def render(self) -> bytes:
+        """Current frame as JPEG."""
+        now = self._hub.now_playing
+        # Taken before drawing, so a change mid-draw leaves it stale and forces another render.
+        signature = self._signature(now)
+        self._last_frame = self._render_frame(now, _progress(now))
+        self._last_signature = signature
+        return self._last_frame
+
+    def _signature(self, now) -> str:
+        if not self._overlay:
+            return str(self._artwork.version)
         # Quantised so a static track does not force a re-encode every frame. The whole second is
         # there for the clock: the bar alone stands still with no duration, and on a long track
         # only moves every duration/600 seconds.
-        signature = "|".join(str(part) for part in (
-            self._artwork.version, now.title, now.artist, now.album, int(progress * 600),
+        return "|".join(str(part) for part in (
+            self._artwork.version, now.title, now.artist, now.album, int(_progress(now) * 600),
             int(now.positionSeconds)))
-
-        if self._last_frame is not None and signature == self._last_signature:
-            return self._last_frame
-
-        self._last_frame = self._render_frame(now, progress)
-        self._last_signature = signature
-        return self._last_frame
 
     def _render_frame(self, now, progress: float) -> bytes:
         frame = self._ensure_ground().copy()
@@ -183,6 +186,12 @@ class CoverFrameRenderer:
             return
 
         self._background = _dominant_color(self._decoded)
+
+
+def _progress(now) -> float:
+    if now.durationSeconds <= 0:
+        return 0.0
+    return min(1.0, max(0.0, now.positionSeconds / now.durationSeconds))
 
 
 def _dominant_color(image: Image.Image) -> tuple[int, int, int]:

@@ -19,7 +19,7 @@ from .. import SAMPLE_RATE
 
 FRAME_BYTES = 4  # s16le stereo
 #: ~46 ms. AudioPacer's buffer peaks at one chunk plus LEAD_SECONDS plus its own 200 ms reserve, and
-#: sheds past 600 ms - at 16384 frames that peak sat 28 ms under the cap and jitter tipped it over.
+#: sheds past 600 ms, so keep a chunk small against that cap.
 CHUNK_BYTES = (1 << 11) * FRAME_BYTES
 
 #: How far ahead of real time the pacing may run before it throttles.

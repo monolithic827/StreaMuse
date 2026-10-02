@@ -8,6 +8,8 @@ import asyncio
 import time
 from dataclasses import dataclass
 
+import aiohttp
+
 from ..state import NowPlaying, SourceOption, SourceState
 
 #: What every receiver delivers, and therefore what the pacer and ffmpeg's input are set to.
@@ -16,6 +18,14 @@ SAMPLE_RATE = 44100
 PUBLISH_INTERVAL = 1.0
 
 LABELS = {"apple": "Apple Music", "spotify": "Spotify", "ytdlp": "yt-dlp"}
+
+#: The session's own timeout raises TimeoutError, which is not a ClientError.
+UNREACHABLE = (aiohttp.ClientError, TimeoutError)
+
+
+def why(exc: Exception) -> str:
+    """TimeoutError stringifies to an empty string."""
+    return str(exc) or "timed out"
 
 
 class TrackState:

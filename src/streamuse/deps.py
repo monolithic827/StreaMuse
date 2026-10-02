@@ -41,7 +41,6 @@ YT_DLP_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.e
 USER_AGENT = "StreaMuse/1.0"
 
 CREATE_NO_WINDOW = 0x08000000
-YT_DLP_UPDATE_TIMEOUT = 120
 
 
 class DependencyManager:
@@ -67,7 +66,6 @@ class DependencyManager:
             await self._ensure_go_librespot()
             self.ffmpeg = await self._ensure_ffmpeg()
             self.cloudflared = await self._ensure_single("cloudflared.exe", CLOUDFLARED_URL, "cloudflared")
-            ours = resolve("yt-dlp.exe")
             self.yt_dlp = await self._ensure_single("yt-dlp.exe", YT_DLP_URL, "yt-dlp")
 
             self._hub.set_dependencies([
@@ -76,13 +74,6 @@ class DependencyManager:
                 DependencyView("go-librespot", self.go_librespot),
                 DependencyView("yt-dlp", self.yt_dlp),
             ])
-
-            # Last, with the copy already usable and the list already published: the check is a
-            # network round trip, and on a stalled connection it runs to its timeout. One downloaded
-            # just now is the latest already, and one found on PATH is somebody else's install to
-            # keep current.
-            if ours and Path(ours).parent == paths.BIN_DIR:
-                await self._update_yt_dlp(ours)
 
     async def _ensure_ffmpeg(self) -> str | None:
         existing = resolve("ffmpeg.exe")
@@ -146,13 +137,17 @@ class DependencyManager:
         self._hub.info(f"{label} installed to {target}")
         return str(target)
 
-    async def _update_yt_dlp(self, path: str) -> None:
+    async def update_yt_dlp(self) -> None:
         """resolve() is satisfied by any copy at all, so without this the one downloaded on first
         launch is the one used forever. yt-dlp's own updater compares against the latest release
-        and replaces the exe in place."""
+        and replaces the exe in place. One found on PATH is somebody else's install to keep current.
+
+        Never ended early: the swap is two renames, and ending it between them leaves no exe."""
+        if self.yt_dlp is None or Path(self.yt_dlp).parent != paths.BIN_DIR:
+            return
         try:
             process = await asyncio.create_subprocess_exec(
-                path, "-U",
+                self.yt_dlp, "-U",
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 creationflags=CREATE_NO_WINDOW,
             )
@@ -161,13 +156,7 @@ class DependencyManager:
             return
         jobs.adopt(process)
 
-        try:
-            output, _ = await asyncio.wait_for(process.communicate(), YT_DLP_UPDATE_TIMEOUT)
-        except TimeoutError:
-            await jobs.end(process)
-            self._hub.warn("yt-dlp update check failed: timed out")
-            return
-
+        output, _ = await process.communicate()
         lines = output.decode(errors="replace").strip().splitlines()
         last = lines[-1] if lines else f"exited {process.returncode}"
         if process.returncode != 0:
@@ -225,8 +214,7 @@ def _unpack_ffmpeg(archive: Path, target: Path) -> bool:
 
 def _unpack_go_librespot(archive: Path) -> None:
     """Unpacked beside the bin folder's own files and moved in with the exe last: resolve() reads
-    the exe's presence as the whole set being there, and an extraction that failed part-way left
-    it in place with DLLs missing or cut short."""
+    the exe's presence as the whole set being there."""
     staging = paths.BIN_DIR / "go-librespot.part"
     shutil.rmtree(staging, ignore_errors=True)
     try:
