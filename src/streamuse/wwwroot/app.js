@@ -25,8 +25,8 @@ async function post(path, body) {
     body: body ? JSON.stringify(body) : undefined
   });
   if (!response.ok) {
-    let detail = '';
-    try { detail = (await response.json()).detail || ''; } catch { /* no body */ }
+    // The backend says why in a plain-text body.
+    const detail = (await response.text().catch(() => '')).trim();
     throw new Error(detail || (path + ' → ' + response.status));
   }
   return response;
